@@ -1,14 +1,40 @@
-"""TelemetryReporter semantics against a fake in-process server."""
+"""AstraTelemetryReporter semantics against a fake in-process server."""
 
 from __future__ import annotations
 
+import sys
 import threading
 import time
+import types
 
 import httpx
 import pytest
 
-from astra_sdk.telemetry import TelemetryReporter
+from astra_sdk.telemetry import AstraTelemetryReporter
+
+
+def _fake_pynvml() -> types.ModuleType:
+    """A minimal in-memory nvidia-ml-py so the GPU fingerprint path runs on a box
+    with no NVIDIA card."""
+    class _Mem:
+        total = 40 * 1024**3
+        used = 12 * 1024**3
+
+    class _Util:
+        gpu = 73
+
+    m = types.ModuleType("pynvml")
+    m.NVML_TEMPERATURE_GPU = 0
+    m.nvmlInit = lambda: None
+    m.nvmlDeviceGetCount = lambda: 1
+    m.nvmlDeviceGetHandleByIndex = lambda i: object()
+    m.nvmlDeviceGetName = lambda h: "NVIDIA A100-SXM4-40GB"
+    m.nvmlDeviceGetMemoryInfo = lambda h: _Mem()
+    m.nvmlSystemGetDriverVersion = lambda: "550.90.07"
+    m.nvmlSystemGetCudaDriverVersion = lambda: 12040
+    m.nvmlDeviceGetUtilizationRates = lambda h: _Util()
+    m.nvmlDeviceGetTemperature = lambda h, s: 61
+    return m
 
 
 class FakeBackend:
@@ -48,8 +74,8 @@ def backend(monkeypatch):
     return fake
 
 
-def _reporter(**kw) -> TelemetryReporter:
-    return TelemetryReporter(
+def _reporter(**kw) -> AstraTelemetryReporter:
+    return AstraTelemetryReporter(
         "http://test", "dep_x", "astra_sk_test", sdk_version="0.2.0", **kw)
 
 
@@ -95,6 +121,35 @@ def test_disabled_via_env(backend, monkeypatch):
     rep.record_event(latency_ms=1.0)
     rep.close()
     assert backend.batches == []
+
+
+def test_snapshot_carries_gpu_fingerprint_incl_driver_version(backend, monkeypatch):
+    """A snapshot must ship the full hardware fingerprint, including every GPU
+    field — driverVersion in particular, which the backend now persists."""
+    import astra_sdk.system as S
+
+    monkeypatch.setitem(sys.modules, "pynvml", _fake_pynvml())
+    monkeypatch.setattr(S, "_NVML", None, raising=False)  # reset cache → re-import fake
+
+    rep = _reporter(active_provider="CUDAExecutionProvider")
+    rep.record_event(latency_ms=1.0)
+    rep.close()  # forces a final snapshot flush
+
+    snaps = [s for b in backend.batches for s in b.get("snapshots", [])]
+    assert snaps, "close() must flush a final system snapshot"
+    s0 = snaps[0]
+    # Static hardware identity is present.
+    assert {"cpuModel", "cpuCores", "ramTotalMb", "availableProviders",
+            "activeProvider", "sdkVersion", "os", "arch"} <= set(s0)
+    assert s0["activeProvider"] == "CUDAExecutionProvider"
+    # GPU identity — incl. the driverVersion that used to be dropped downstream.
+    assert s0["gpuName"] == "NVIDIA A100-SXM4-40GB"
+    assert s0["gpuCount"] == 1
+    assert s0["cudaVersion"] == "12.4"
+    assert s0["driverVersion"] == "550.90.07"
+    # Dynamic accelerator sample too.
+    assert s0["gpuUtilPct"] == 73.0
+    assert s0["gpuMemUsedMb"] > 0
 
 
 def test_window_stats_emitted_on_close(backend):

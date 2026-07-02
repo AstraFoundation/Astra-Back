@@ -2,8 +2,9 @@
 time-series, enriched fleet inventory, and the cost/efficiency lens.
 
 The fleet simulator injects a believable multi-accelerator serving fleet (A10G,
-T4, Apple CoreML, hosted x86 CPU) so these views have data on a box without a
-GPU; the aggregation treats those rows exactly like real astra-ai-sdk telemetry.
+T4, Apple CoreML, Qualcomm NPU, hosted x86 CPU) so these views have data on a box
+without a GPU; the aggregation treats those rows exactly like real astra-ai-sdk
+telemetry.
 """
 
 from __future__ import annotations
@@ -38,12 +39,42 @@ def test_classify_accelerators():
     assert cpu["accelerator"] == "cpu" and cpu["hourlyUsd"] > 0
 
 
+def test_classify_npu_providers():
+    """Dedicated NPUs (Qualcomm/Intel/AMD-XDNA) must classify as `npu`, not CPU —
+    the pre-fix behavior collapsed every non-Apple accelerator into a CPU bucket."""
+    qnn = hardware.classify(
+        {"activeProvider": "QNNExecutionProvider", "arch": "aarch64",
+         "cpuModel": "Qualcomm Snapdragon 8 Gen 3"})
+    assert qnn["accelerator"] == "npu"
+    assert qnn["hourlyUsd"] == 0.0                      # on-device edge → no cloud $
+    assert hardware.classify(
+        {"activeProvider": "OpenVINOExecutionProvider", "arch": "x86_64"}
+    )["accelerator"] == "npu"
+    assert hardware.classify(
+        {"activeProvider": "VitisAIExecutionProvider", "arch": "x86_64"}
+    )["accelerator"] == "npu"
+
+
+def test_classify_rocm_and_directml_gpus():
+    """A ROCm/AMD GPU whose name pynvml can't resolve (no NVML) still classifies
+    as `gpu`, not CPU; DirectML (a GPU abstraction) is a GPU too."""
+    assert hardware.classify(
+        {"activeProvider": "ROCMExecutionProvider", "arch": "x86_64"}  # no gpuName
+    )["accelerator"] == "gpu"
+    named = hardware.classify(
+        {"gpuName": "AMD Instinct MI210", "activeProvider": "ROCMExecutionProvider"})
+    assert named["accelerator"] == "gpu" and named["deviceClass"] == "AMD Instinct MI210"
+    assert hardware.classify(
+        {"activeProvider": "DmlExecutionProvider", "arch": "x86_64"}
+    )["accelerator"] == "gpu"
+
+
 def test_fleet_simulate_summary(make_live_model, deploy_model, client):
     mid = make_live_model("hw-fleet.onnx")["modelId"]
     deploy_model(mid)
     summary = _simulate_fleet(client, mid)
     fleet = summary["fleet"]
-    assert fleet["hosts"] == 4
+    assert fleet["hosts"] == 5          # A10G, T4, CoreML, Qualcomm NPU, x86 CPU
     assert fleet["gpuHosts"] == 2
     assert fleet["events"] >= 400
 
@@ -100,6 +131,41 @@ def test_clients_enriched_with_hardware(make_live_model, deploy_model, client):
     # A GPU host reports its accelerator name + a live util sample.
     gpu_hosts = [c for c in clients if c["gpuName"]]
     assert gpu_hosts and any(c["gpuUtilPct"] for c in gpu_hosts)
+
+
+def test_npu_host_grouped_as_npu(make_live_model, deploy_model, client):
+    """The Qualcomm NPU serving host surfaces as its own `npu` accelerator group —
+    before the fix it was mislabeled a CPU host."""
+    mid = make_live_model("hw-npu.onnx")["modelId"]
+    deploy_model(mid)
+    _simulate_fleet(client, mid)
+
+    groups = client.get(f"/api/models/{mid}/telemetry/hardware").json()
+    npu = [g for g in groups if g["accelerator"] == "npu"]
+    assert npu, f"expected an npu group, got {[g['accelerator'] for g in groups]}"
+    g = npu[0]
+    assert "NPU" in g["deviceClass"]
+    assert g["provider"] == "QNNExecutionProvider"
+    assert g["throughputPerSec"] > 0 and g["samples"] > 0
+    assert g["estCostPer1M"] == 0.0                    # on-device → no cloud cost
+
+
+def test_driver_version_persisted_and_returned(make_live_model, deploy_model, client):
+    """`driverVersion` used to be silently dropped at ingest (absent from the
+    snapshot schema). It must now round-trip SDK → ingest → /clients."""
+    mid = make_live_model("hw-driver.onnx")["modelId"]
+    deploy_model(mid)
+    _simulate_fleet(client, mid)
+
+    clients = client.get(f"/api/models/{mid}/telemetry/clients").json()
+    assert "driverVersion" in clients[0]               # field is in the read contract
+    gpu_hosts = [c for c in clients if c["gpuName"]]
+    assert gpu_hosts, "expected simulated GPU hosts"
+    # At least one GPU host carries the NVIDIA driver version end-to-end.
+    assert any(c["driverVersion"] for c in gpu_hosts), \
+        f"driverVersion lost: {[(c['gpuName'], c['driverVersion']) for c in gpu_hosts]}"
+    a10g = next((c for c in gpu_hosts if "A10G" in c["gpuName"]), None)
+    assert a10g and a10g["driverVersion"] == "550.90.07"
 
 
 def test_no_traffic_returns_empty_hardware_views(real_model, client):

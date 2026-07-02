@@ -58,4 +58,8 @@ export interface OrtModule {
       options?: OrtSessionOptions,
     ): Promise<OrtInferenceSession>;
   };
+  // The execution-provider backends compiled into this onnxruntime-node build
+  // (e.g. [{name:"cpu"}, {name:"coreml"}, {name:"webgpu"}]). Present since
+  // onnxruntime-node 1.16; read defensively (may be absent on older builds).
+  listSupportedBackends?: () => ReadonlyArray<{ name: string; bundled?: boolean }>;
 }

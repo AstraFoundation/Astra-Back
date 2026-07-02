@@ -19,7 +19,7 @@ class HardwareCostRow(BaseModel):
 
     key: str
     label: str
-    accelerator: Literal["gpu", "coreml", "cpu", "hosted"]
+    accelerator: Literal["gpu", "coreml", "npu", "cpu", "hosted"]
     p95: float
     throughputPerSec: float
     compressedPer1M: float

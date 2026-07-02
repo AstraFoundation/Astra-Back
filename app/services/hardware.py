@@ -10,8 +10,9 @@ views the platform's value prop actually needs:
 
 Events themselves don't carry hardware, but every SDK client_id has exactly one
 hardware identity (from its snapshots), so we build a client_id → hardware map
-from the latest snapshot per client and group events through it. Server-sourced
-events (hosted /v1/infer, no client_id) fall into a "Astra hosted" bucket.
+from the latest snapshot per client and group events through it. On-device events
+without a hardware snapshot yet (e.g. a client whose first snapshot hasn't landed)
+fall into a generic "On-device · CPU" bucket.
 """
 
 from __future__ import annotations
@@ -50,27 +51,50 @@ def _gpu_hourly(gpu_name: str) -> float:
     return 1.0  # unknown discrete GPU
 
 
+# ORT execution-provider substrings that denote a discrete GPU (name may be
+# unknown when pynvml isn't installed — ROCm/DirectML have no NVML equivalent).
+_GPU_PROVIDERS = ("cuda", "tensorrt", "rocm", "migraphx")
+# ORT execution-provider substrings that denote a dedicated NPU / neural
+# accelerator that is neither an NVIDIA/AMD GPU nor Apple CoreML. Each maps to a
+# best-effort vendor label for the dashboard. Ordered most-specific first.
+_NPU_PROVIDERS: list[tuple[str, str]] = [
+    ("qnn", "Qualcomm NPU"),          # Hexagon (Snapdragon)
+    ("vitisai", "AMD Ryzen AI NPU"),  # Xilinx/AMD XDNA
+    ("cann", "Huawei Ascend NPU"),
+    ("rknpu", "Rockchip NPU"),
+    ("nnapi", "Android NNAPI"),
+    ("openvino", "Intel NPU"),        # Intel accelerator (NPU/VPU)
+]
+
+
 def classify(hw: dict) -> dict:
     """Map a hardware identity → {deviceClass, accelerator, hourlyUsd}.
 
     `hw` carries provider/arch/gpuName/cpuModel (already parsed from a snapshot's
-    runtime_json). `accelerator` is one of gpu | coreml | cpu | hosted."""
+    runtime_json). `accelerator` is one of gpu | coreml | npu | cpu."""
     gpu_name = (hw.get("gpuName") or "").strip()
     provider = (hw.get("activeProvider") or hw.get("provider") or "").strip()
     arch = (hw.get("arch") or "").lower()
     plow = provider.lower()
 
-    if gpu_name and ("cuda" in plow or "tensorrt" in plow or "rocm" in plow or
-                     hw.get("gpuCount")):
+    # Named discrete GPU — from a pynvml identity or a GPU execution provider.
+    if gpu_name and (any(p in plow for p in _GPU_PROVIDERS) or hw.get("gpuCount")):
         return {"deviceClass": gpu_name, "accelerator": "gpu",
                 "hourlyUsd": _gpu_hourly(gpu_name)}
+    # Apple CoreML (unified GPU + Neural Engine).
     if "coreml" in plow:
         label = hw.get("cpuModel") or "Apple Silicon"
         return {"deviceClass": f"{label} · CoreML", "accelerator": "coreml",
                 "hourlyUsd": _ONDEVICE_HOURLY}
-    if "cuda" in plow or "tensorrt" in plow:  # GPU provider, name unknown
-        return {"deviceClass": "CUDA GPU", "accelerator": "gpu",
-                "hourlyUsd": 1.0}
+    # Dedicated NPU / neural accelerator (Qualcomm / Intel / AMD-XDNA / …).
+    for needle, label in _NPU_PROVIDERS:
+        if needle in plow:
+            return {"deviceClass": label, "accelerator": "npu",
+                    "hourlyUsd": _ONDEVICE_HOURLY}
+    # GPU execution provider without a resolved name (ROCm/DirectML → no NVML).
+    if any(p in plow for p in _GPU_PROVIDERS) or "dml" in plow or "directml" in plow:
+        label = "DirectML GPU" if ("dml" in plow or "directml" in plow) else "GPU"
+        return {"deviceClass": label, "accelerator": "gpu", "hourlyUsd": 1.0}
     # CPU.
     is_arm = arch.startswith("arm") or arch.startswith("aarch")
     label = hw.get("cpuModel") or ("ARM64 CPU" if is_arm else "x86-64 CPU")
@@ -91,16 +115,31 @@ def est_cost_per_million(mean_latency_ms: float, hourly_usd: float) -> float:
 
 def _client_hardware(session: Session, model_id: str) -> dict[str, dict]:
     """Latest snapshot per client_id → its parsed hardware identity (+ live
-    resource sample)."""
-    rows = session.exec(
-        select(TelemetrySnapshotRow)
+    resource sample).
+
+    Computes the newest ts per client in SQL (GROUP BY MAX(ts), backed by the
+    ix_snap_model_ts index) instead of pulling a capped recent slice and deduping
+    in Python — the old newest-1000 window dropped any client quiet longer than
+    the few minutes those rows covered into a generic CPU bucket, corrupting the
+    per-hardware breakdown on a real fleet."""
+    from sqlalchemy import func, tuple_
+
+    pairs = session.exec(
+        select(TelemetrySnapshotRow.client_id, func.max(TelemetrySnapshotRow.ts))
         .where(TelemetrySnapshotRow.model_id == model_id)
-        .order_by(TelemetrySnapshotRow.ts.desc())  # type: ignore[attr-defined]
-        .limit(1000)
+        .group_by(TelemetrySnapshotRow.client_id)  # type: ignore[arg-type]
+    ).all()
+    if not pairs:
+        return {}
+    rows = session.exec(
+        select(TelemetrySnapshotRow).where(
+            TelemetrySnapshotRow.model_id == model_id,
+            tuple_(TelemetrySnapshotRow.client_id, TelemetrySnapshotRow.ts).in_(pairs),
+        )
     ).all()
     latest: dict[str, dict] = {}
     for r in rows:
-        if r.client_id in latest:
+        if r.client_id in latest:  # a rare ts tie — keep the first
             continue
         try:
             rt = json.loads(r.runtime_json)
@@ -148,10 +187,11 @@ def hardware_breakdown(session: Session, model_id: str, range_str: str = "24h") 
             gpu_name = hw.get("gpuName", "")
             provider = hw.get("activeProvider") or hw.get("provider", "")
         else:
-            # Hosted serving path (CPUExecutionProvider, no SDK snapshot).
-            info = {"deviceClass": "Astra hosted · CPU", "accelerator": "hosted",
+            # On-device client event without a hardware snapshot yet — attribute
+            # it to a generic on-device CPU bucket until its fingerprint lands.
+            info = {"deviceClass": "On-device · CPU", "accelerator": "cpu",
                     "hourlyUsd": _CPU_X86_HOURLY}
-            key = "hosted:Astra hosted · CPU"
+            key = "cpu:On-device · CPU"
             gpu_name = ""
             provider = "CPUExecutionProvider"
         g = groups.setdefault(key, {
@@ -187,7 +227,7 @@ def hardware_breakdown(session: Session, model_id: str, range_str: str = "24h") 
             "accelerator": g["accelerator"],
             "provider": g["provider"],
             "gpuName": g["gpuName"],
-            "hostCount": max(1, len(g["clients"])) if g["accelerator"] != "hosted" else 1,
+            "hostCount": max(1, len(g["clients"])),
             "samples": g["samples"],
             "reqPerMin": round(g["samples"] / win_min, 1),
             "p50": round(_pct(lat, 50), 3),
@@ -200,7 +240,7 @@ def hardware_breakdown(session: Session, model_id: str, range_str: str = "24h") 
             "avgGpuMemUsedMb": round(sum(gpu_m) / len(gpu_m), 1) if gpu_m else None,
             "estCostPer1M": est_cost_per_million(mean_lat, g["hourlyUsd"]),
         })
-    # Fastest first (lowest p95); hosted/cpu naturally sink below accelerators.
+    # Fastest first (lowest p95); CPU buckets naturally sink below accelerators.
     out.sort(key=lambda r: (r["p95"] if r["p95"] > 0 else 1e12))
     return out
 

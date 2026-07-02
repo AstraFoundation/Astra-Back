@@ -5,7 +5,13 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import type { OrtModule, OrtTensor } from "../src/ort.js";
-import { LocalRunner, pullArtifact, requireServeExtra } from "../src/runner.js";
+import {
+  AstraRunner,
+  normalizeProvider,
+  pullArtifact,
+  requireServeExtra,
+  resolveProviders,
+} from "../src/runner.js";
 import { buildTensor } from "../src/tensor.js";
 import { installFetch } from "./_mock.js";
 
@@ -57,7 +63,7 @@ describe("pullArtifact", () => {
 });
 
 describe("requireServeExtra", () => {
-  it("throws a RunnerError when onnxruntime-node is absent", async () => {
+  it("throws a AstraRunnerError when onnxruntime-node is absent", async () => {
     let present = true;
     try {
       await import("onnxruntime-node");
@@ -65,14 +71,57 @@ describe("requireServeExtra", () => {
       present = false;
     }
     if (present) return; // skip if the optional dep happens to be installed
-    await expect(requireServeExtra()).rejects.toMatchObject({ name: "RunnerError" });
+    await expect(requireServeExtra()).rejects.toMatchObject({ name: "AstraRunnerError" });
   });
 });
 
-describe("LocalRunner.fromFile", () => {
+describe("AstraRunner.fromFile", () => {
   it("is a static factory that rejects a missing model path", async () => {
-    expect(typeof LocalRunner.fromFile).toBe("function");
-    await expect(LocalRunner.fromFile("/no/such/model.onnx")).rejects.toBeTruthy();
+    expect(typeof AstraRunner.fromFile).toBe("function");
+    await expect(AstraRunner.fromFile("/no/such/model.onnx")).rejects.toBeTruthy();
+  });
+});
+
+describe("provider reporting (honest availableProviders)", () => {
+  // A build that ships CPU + CoreML + WebGPU (what onnxruntime-node reports on a
+  // Mac) — listSupportedBackends uses short names, like the real module.
+  const ortWithCoreml = {
+    listSupportedBackends: () => [
+      { name: "cpu", bundled: true },
+      { name: "coreml", bundled: true },
+      { name: "webgpu", bundled: true },
+    ],
+  } as unknown as OrtModule;
+
+  it("normalizes short EP names to full ORT names (Python parity)", () => {
+    expect(normalizeProvider("coreml")).toBe("CoreMLExecutionProvider");
+    expect(normalizeProvider("cuda")).toBe("CUDAExecutionProvider");
+    expect(normalizeProvider("qnn")).toBe("QNNExecutionProvider");
+    // Already-full names pass through unchanged; unknown names too.
+    expect(normalizeProvider("CoreMLExecutionProvider")).toBe("CoreMLExecutionProvider");
+    expect(normalizeProvider("SomethingNew")).toBe("SomethingNew");
+  });
+
+  it("reports the build's real supported EPs, not CPU-only, when none requested", () => {
+    const { active, available } = resolveProviders(ortWithCoreml, undefined);
+    // Bound EP defaults to CPU (onnxruntime-node's default) — honest.
+    expect(active).toBe("CPUExecutionProvider");
+    // But a CoreML-capable host must NOT be misreported as CPU-only.
+    expect(available).toContain("CoreMLExecutionProvider");
+    expect(available).toContain("CPUExecutionProvider");
+  });
+
+  it("honors an explicitly requested provider and always includes it", () => {
+    const { active, available } = resolveProviders(ortWithCoreml, ["coreml"]);
+    expect(active).toBe("CoreMLExecutionProvider");
+    expect(available).toContain("CoreMLExecutionProvider");
+  });
+
+  it("falls back to [active] when the build can't list backends", () => {
+    const bareOrt = {} as unknown as OrtModule;
+    const { active, available } = resolveProviders(bareOrt, ["cuda"]);
+    expect(active).toBe("CUDAExecutionProvider");
+    expect(available).toEqual(["CUDAExecutionProvider"]);
   });
 });
 

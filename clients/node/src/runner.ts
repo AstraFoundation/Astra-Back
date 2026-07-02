@@ -1,9 +1,9 @@
-// LocalRunner — serve a Astra-deployed artifact on your own hardware.
+// AstraRunner — serve a Astra-deployed artifact on your own hardware.
 // Mirrors clients/python/astra_sdk/runner.py.
 //
-//     import { LocalRunner } from "astra-ai-sdk";
+//     import { AstraRunner } from "astra-ai-sdk";
 //
-//     const runner = await LocalRunner.fromDeployment({
+//     const runner = await AstraRunner.fromDeployment({
 //       baseUrl: "https://app.example.com",
 //       deploymentId: "dep_ab12cd34ef",
 //       apiKey: "astra_sk_live_…",
@@ -14,7 +14,7 @@
 // The artifact is pulled once via the API-key-authed
 // GET /api/v1/artifacts/{deployment_id} and cached on disk keyed by its sha256,
 // so restarts don't re-download. Every run() is measured (pre/infer/post) and
-// shipped to the Astra dashboard by the background TelemetryReporter.
+// shipped to the Astra dashboard by the background AstraTelemetryReporter.
 //
 // Requires onnxruntime-node:  npm i onnxruntime-node
 
@@ -25,7 +25,7 @@ import { homedir } from "node:os";
 import { extname, join } from "node:path";
 
 import { HttpSession, resolveBaseUrl } from "./http.js";
-import { TelemetryReporter } from "./telemetry.js";
+import { AstraTelemetryReporter } from "./telemetry.js";
 import {
   batchOf,
   buildTensor,
@@ -45,10 +45,10 @@ import type { Sampleable } from "./stats.js";
 
 const DEFAULT_CACHE = "~/.cache/astra";
 
-export class RunnerError extends Error {
+export class AstraRunnerError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = "RunnerError";
+    this.name = "AstraRunnerError";
   }
 }
 
@@ -58,7 +58,7 @@ class BadInputError extends Error {}
 
 let cachedOrt: OrtModule | null = null;
 
-/** Lazily load onnxruntime-node; throw an actionable RunnerError if absent. */
+/** Lazily load onnxruntime-node; throw an actionable AstraRunnerError if absent. */
 export async function requireServeExtra(): Promise<OrtModule> {
   if (cachedOrt) return cachedOrt;
   try {
@@ -69,7 +69,7 @@ export async function requireServeExtra(): Promise<OrtModule> {
     cachedOrt = (mod.default ?? mod) as OrtModule;
     return cachedOrt;
   } catch {
-    throw new RunnerError(
+    throw new AstraRunnerError(
       "Local serving needs onnxruntime-node — install it: npm i onnxruntime-node",
     );
   }
@@ -83,6 +83,60 @@ function ortVersion(): string {
   } catch {
     return "";
   }
+}
+
+// onnxruntime-node accepts short EP names ("coreml", "cuda") in
+// executionProviders and listSupportedBackends() reports short names too. The
+// dashboard groups Node and Python hosts by provider string, and the Python SDK
+// reports full ORT names ("CoreMLExecutionProvider"), so normalize to the full
+// name for telemetry — the session is still created with the caller's raw names.
+const _EP_ALIASES: Record<string, string> = {
+  cpu: "CPUExecutionProvider",
+  coreml: "CoreMLExecutionProvider",
+  cuda: "CUDAExecutionProvider",
+  tensorrt: "TensorrtExecutionProvider",
+  dml: "DmlExecutionProvider",
+  directml: "DmlExecutionProvider",
+  rocm: "ROCMExecutionProvider",
+  webgpu: "WebGpuExecutionProvider",
+  qnn: "QNNExecutionProvider",
+  openvino: "OpenVINOExecutionProvider",
+  nnapi: "NnapiExecutionProvider",
+  xnnpack: "XnnpackExecutionProvider",
+};
+
+export function normalizeProvider(name: string): string {
+  const n = name.trim();
+  if (n.endsWith("ExecutionProvider")) return n;
+  return _EP_ALIASES[n.toLowerCase()] ?? n;
+}
+
+/** The EP backends this onnxruntime-node build actually ships, as full ORT
+ *  names. Empty when the build is too old to report them. */
+export function supportedProviders(ort: OrtModule): string[] {
+  try {
+    const backends = ort.listSupportedBackends?.() ?? [];
+    return backends.map((b) => normalizeProvider(b.name));
+  } catch {
+    return [];
+  }
+}
+
+/** Resolve the provider identity reported in telemetry. `activeProvider` is the
+ *  EP the session was asked to bind (the first requested, or CPU — the
+ *  onnxruntime-node default); `availableProviders` is the honest list of EPs the
+ *  build supports, so a CoreML/CUDA-capable host is never misreported as CPU-only. */
+export function resolveProviders(
+  ort: OrtModule,
+  requested: string[] | undefined,
+): { active: string; available: string[] } {
+  const reqNorm = requested?.map(normalizeProvider).filter(Boolean);
+  const active = reqNorm?.[0] ?? "CPUExecutionProvider";
+  const supported = supportedProviders(ort);
+  const available = supported.length ? supported : (reqNorm ?? [active]);
+  // Ensure the bound EP is always present in the reported set.
+  if (!available.includes(active)) available.unshift(active);
+  return { active, available };
 }
 
 function expandHome(dir: string): string {
@@ -147,8 +201,8 @@ export interface FromDeploymentOptions {
 }
 
 /** Local ONNX serving with built-in telemetry. */
-export class LocalRunner {
-  private reporter: TelemetryReporter | null = null;
+export class AstraRunner {
+  private reporter: AstraTelemetryReporter | null = null;
   private readonly metas: InputMeta[];
   private readonly activeProviderName: string;
 
@@ -161,7 +215,7 @@ export class LocalRunner {
     this.metas = this.readInputMetas();
   }
 
-  static async fromDeployment(opts: FromDeploymentOptions): Promise<LocalRunner> {
+  static async fromDeployment(opts: FromDeploymentOptions): Promise<AstraRunner> {
     const ort = await requireServeExtra();
     const base = resolveBaseUrl(opts.baseUrl);
     const path = await pullArtifact({
@@ -175,16 +229,20 @@ export class LocalRunner {
       path,
       opts.providers ? { executionProviders: opts.providers } : undefined,
     );
-    // onnxruntime-node does not reliably expose the EP it actually bound, so we
-    // record the requested provider (or CPU) rather than fabricate one.
-    const active = opts.providers?.[0] ?? "CPUExecutionProvider";
-    const runner = new LocalRunner(ort, session, active);
-    runner.reporter = new TelemetryReporter(base, opts.deploymentId, opts.apiKey, {
+    // onnxruntime-node does not expose the EP it actually bound, so record the
+    // requested provider (or CPU) as active — but report the build's real
+    // supported EPs so a GPU/NPU-capable host isn't misreported as CPU-only.
+    const { active, available } = resolveProviders(ort, opts.providers);
+    const runner = new AstraRunner(ort, session, active);
+    runner.reporter = new AstraTelemetryReporter(base, opts.deploymentId, opts.apiKey, {
       sdkVersion: VERSION,
       enabled: opts.reportTelemetry ?? true,
       activeProvider: active,
       ortVersion: ortVersion(),
-      availableProviders: opts.providers ?? [active],
+      availableProviders: available,
+      // Land the durable telemetry spool under the same cache root as the
+      // artifact (~/.cache/astra/<deployment>/telemetry/ by default).
+      cacheDir: opts.cacheDir,
     });
     return runner;
   }
@@ -204,20 +262,20 @@ export class LocalRunner {
       baseUrl?: string;
       reportTelemetry?: boolean;
     } = {},
-  ): Promise<LocalRunner> {
+  ): Promise<AstraRunner> {
     const ort = await requireServeExtra();
     const session = await ort.InferenceSession.create(
       modelPath,
       opts.providers ? { executionProviders: opts.providers } : undefined,
     );
-    const active = opts.providers?.[0] ?? "CPUExecutionProvider";
-    const runner = new LocalRunner(ort, session, active);
+    const { active, available } = resolveProviders(ort, opts.providers);
+    const runner = new AstraRunner(ort, session, active);
     // Report telemetry only when a deployment is supplied — there's nowhere to
     // send it otherwise. Defaults on in that case, off for a bare file.
     const wantTelemetry =
       opts.reportTelemetry ?? Boolean(opts.deploymentId && opts.apiKey);
     if (wantTelemetry && opts.deploymentId && opts.apiKey) {
-      runner.reporter = new TelemetryReporter(
+      runner.reporter = new AstraTelemetryReporter(
         resolveBaseUrl(opts.baseUrl),
         opts.deploymentId,
         opts.apiKey,
@@ -226,7 +284,7 @@ export class LocalRunner {
           enabled: true,
           activeProvider: active,
           ortVersion: ortVersion(),
-          availableProviders: opts.providers ?? [active],
+          availableProviders: available,
         },
       );
     }
