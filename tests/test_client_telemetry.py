@@ -106,7 +106,7 @@ def test_batch_ts_clamping(client, live_dep):
             "clientId": "sdk_test01",
             "events": [
                 _event(now),
-                _event(now - timedelta(days=30)),     # too old → dropped
+                _event(now - timedelta(days=40)),     # older than 30d clamp → dropped
                 _event(now + timedelta(hours=2)),     # future → dropped
             ],
         },
@@ -127,6 +127,37 @@ def test_batch_too_large(client, live_dep):
     )
     assert r.status_code == 422
     assert r.json()["detail"]["code"] == "batch_too_large"
+
+
+def test_batch_idempotent_resend(client, live_dep):
+    """A durable-spool segment re-sent after a reconnect/restart carries the same
+    batchId — the server must dedup it, never double-counting."""
+    now = _now()
+    url = f"/api/v1/telemetry/{live_dep['dep_id']}/batch"
+    hdr = {"Authorization": f"Bearer {live_dep['key']}"}
+    batch = {
+        "clientId": "sdk_idem",
+        "batchId": "batch_idem_001",
+        "events": [_event(now - timedelta(seconds=i)) for i in range(6)],
+    }
+
+    def client_count() -> int:
+        meta = client.get(
+            f"/api/models/{live_dep['model_id']}/telemetry/meta").json()
+        return meta["sources"]["client"]
+
+    before = client_count()
+    r1 = client.post(url, headers=hdr, json=batch)
+    assert r1.status_code == 200, r1.text
+    assert r1.json()["accepted"]["events"] == 6
+    after_first = client_count()
+    assert after_first - before == 6
+
+    # Re-send the identical batch (same batchId) — deduped, acked, not re-inserted.
+    r2 = client.post(url, headers=hdr, json=batch)
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["accepted"]["events"] == 6      # prior accepted counts echoed
+    assert client_count() == after_first, "re-sent batch must not double-count"
 
 
 def test_client_events_feed_kpi(client, live_dep):
@@ -220,3 +251,34 @@ def test_prediction_and_input_drift(client, make_live_model):
     titles = {a["title"] for a in alerts}
     assert "prediction drift" in titles, titles
     assert "input distribution shift" in titles, titles
+
+
+def test_gpu_snapshot_driver_version_round_trips(client, live_dep):
+    """A GPU host's snapshot carrying driverVersion is accepted through the real
+    batch endpoint and surfaced by /clients. Regression: driverVersion was absent
+    from the ClientSnapshot schema, so Pydantic silently dropped it at ingest."""
+    now = _now()
+    snap = _snapshot(now)
+    snap.update({
+        "os": "Linux", "arch": "x86_64",
+        "provider": "CUDAExecutionProvider", "activeProvider": "CUDAExecutionProvider",
+        "availableProviders": "CUDAExecutionProvider,CPUExecutionProvider",
+        "cpuModel": "Intel Xeon Platinum 8259CL", "cpuCores": 8, "ramTotalMb": 32000.0,
+        "gpuName": "NVIDIA A100-SXM4-40GB", "gpuCount": 1, "gpuMemTotalMb": 40000.0,
+        "cudaVersion": "12.4", "driverVersion": "550.90.07",
+        "gpuUtilPct": 68.0, "gpuMemUsedMb": 12000.0, "gpuTempC": 60.0,
+    })
+    r = client.post(
+        f"/api/v1/telemetry/{live_dep['dep_id']}/batch",
+        headers={"Authorization": f"Bearer {live_dep['key']}"},
+        json={"clientId": "sdk_gpu01", "snapshots": [snap]},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["accepted"]["snapshots"] == 1
+
+    hosts = client.get(f"/api/models/{live_dep['model_id']}/telemetry/clients").json()
+    host = next((h for h in hosts if h["clientId"] == "sdk_gpu01"), None)
+    assert host is not None, "GPU snapshot host not found in /clients"
+    assert host["driverVersion"] == "550.90.07"      # previously-dropped field survives
+    assert host["gpuName"] == "NVIDIA A100-SXM4-40GB"
+    assert host["cudaVersion"] == "12.4"

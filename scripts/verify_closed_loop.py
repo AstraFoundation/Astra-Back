@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""End-to-end proof that the telemetry closed loop ACTUALLY works.
+"""End-to-end proof that the ON-DEVICE telemetry closed loop ACTUALLY works.
+
+Astra is on-device-only: the server never runs a user's model. A deployment's
+only external traffic is the astra-ai-sdk shipping telemetry *batches* to
+POST /api/v1/telemetry/{deployment_id}/batch with a Bearer API key. This script
+provisions a model end-to-end, then drives that public telemetry path and asserts
+the whole dashboard/closed-loop reacts — using ONLY the public API.
 
 Run against a live backend (default http://localhost:8000) started with the
 inline drift monitor on a short interval, e.g.:
@@ -18,12 +24,15 @@ Checklist proven (each step asserts against the public API only):
   1.  signup → session cookie
   2.  model import → real fast pipeline completes
   3.  deployment + API key minted
-  4.  60 real inferences through POST /api/v1/infer (Bearer key)
+  4.  SDK telemetry batch (~60 on-device events incl. failed ones + a snapshot +
+      a window) is accepted through POST /api/v1/telemetry/{dep}/batch (Bearer key)
   5.  telemetry flips to source=live; KPI/series/percentiles are consistent
   6.  SSE stream delivers a snapshot frame
-  7.  bad-input requests are recorded as failed events
+  7.  the success:false events are recorded (live error rate > 0)
   8.  the drift monitor pass raises a REAL "5xx error spike" alert
   9.  deployment live metrics (qps / errorsPct / lastEventAt) are maintained
+  10. re-POSTing the SAME batch (same batchId) is deduped — the client event
+      count does NOT increase (idempotency)
 
 Exit code 0 = closed loop verified; 1 = a step failed.
 """
@@ -35,6 +44,7 @@ import json
 import sys
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
@@ -64,6 +74,60 @@ def wait_until(fn, timeout: float, interval: float = 0.5):
             return last
         time.sleep(interval)
     return last
+
+
+def _iso_ms(dt: datetime) -> str:
+    """ISO8601 UTC ms + Z, e.g. 2026-07-01T12:00:00.123Z (server-accepted form)."""
+    return dt.strftime("%Y-%m-%dT%H:%M:%S") + f".{dt.microsecond // 1000:03d}Z"
+
+
+def build_batch(client_id: str, n_events: int = 60, n_fail: int = 6) -> dict:
+    """One believable on-device SDK batch: ~60 measured inferences (a handful
+    failed with errorCode "inference_error"), a host snapshot, and a window of
+    input/output distribution stats. Timestamps are recent so the batch lands
+    inside the drift monitor's rolling window and none are dropped."""
+    now = datetime.now(timezone.utc)
+    events = []
+    for i in range(n_events):
+        ts = now - timedelta(seconds=(n_events - i) * 0.5)   # recent, spread out
+        failed = i < n_fail
+        events.append({
+            "id": str(uuid.uuid4()),
+            "ts": _iso_ms(ts),
+            "latencyMs": round((45.0 + i) if failed else (8.0 + (i % 7) * 1.5), 3),
+            "preMs": 0.4,
+            "postMs": 0.2,
+            "success": not failed,
+            "errorCode": "inference_error" if failed else None,
+            "batchSize": 1,
+            "region": "local",
+            "inputSig": "input:1x3x224x224:float32",
+        })
+    snapshot = {
+        "ts": _iso_ms(now),
+        "cpuPct": 34.0, "rssMb": 420.0, "throughputRpm": 120.0, "droppedEvents": 0,
+        "sdkVersion": "0.3.0", "pythonVersion": "3.12.0", "ortVersion": "1.20.0",
+        "os": "Linux", "arch": "x86_64", "provider": "CPUExecutionProvider",
+        "host": "verify-host",
+    }
+    window = {
+        "windowStart": _iso_ms(now - timedelta(seconds=60)),
+        "windowEnd": _iso_ms(now),
+        "n": n_events,
+        "inputs": {"input": {"mean": 0.0, "std": 1.0, "min": -3.0, "max": 3.0, "nanPct": 0.0}},
+        "output": {
+            "classDist": {"3": 0.6, "7": 0.4},
+            "hist": [0, 1, 2, 3, 5, 8, 10, 12, 10, 8, 5, 3, 2, 1, 0, 0],
+            "entropyMean": 1.2, "top1ConfMean": 0.81,
+        },
+    }
+    return {
+        "clientId": client_id,
+        "batchId": uuid.uuid4().hex,          # idempotency key (server dedups on it)
+        "events": events,
+        "snapshots": [snapshot],
+        "windows": [window],
+    }
 
 
 def main() -> None:
@@ -104,13 +168,19 @@ def main() -> None:
     dep_id, api_key = dep["deployment"]["id"], dep["apiKey"]
     auth = {"Authorization": f"Bearer {api_key}"}
 
-    # 4 — real traffic
-    ok_count = 0
-    for _ in range(60):
-        rr = c.post(f"/api/v1/infer/{dep_id}", headers=auth,
-                    json={"inputs": None, "batch": 1})
-        ok_count += rr.status_code == 200
-    step("60 real inferences served", ok_count == 60, f"{ok_count}/60 ok")
+    # 4 — on-device SDK telemetry: ship one batch of ~60 measured inferences
+    # (a few failed) plus a host snapshot and a distribution window. This is the
+    # ONLY external traffic a deployment sees now — the SDK closing the loop.
+    client_id = "sdk_" + uuid.uuid4().hex[:12]
+    batch = build_batch(client_id, n_events=60, n_fail=6)
+    rr = c.post(f"/api/v1/telemetry/{dep_id}/batch", headers=auth, json=batch)
+    step("telemetry batch accepted (Bearer key)", rr.status_code == 200,
+         f"http {rr.status_code}")
+    acc = rr.json()
+    step("batch accepted 60 events + 1 snapshot + 1 window, 0 dropped",
+         acc["accepted"]["events"] == 60 and acc["accepted"]["snapshots"] == 1
+         and acc["accepted"]["windows"] == 1 and acc["dropped"] == 0,
+         f"accepted={acc['accepted']} dropped={acc['dropped']}")
 
     # 5 — live aggregation
     meta = c.get(f"/api/models/{mid}/telemetry/meta").json()
@@ -144,13 +214,9 @@ def main() -> None:
         pass
     step("SSE stream delivers a snapshot frame", got_snapshot)
 
-    # 7 — induce real failures (bad input name → recorded failed events)
-    bad = 0
-    for _ in range(10):
-        rr = c.post(f"/api/v1/infer/{dep_id}", headers=auth,
-                    json={"inputs": {"nonexistent_input": [[1.0]]}})
-        bad += rr.status_code >= 400
-    step("bad inputs rejected AND recorded", bad == 10, f"{bad}/10 failed as expected")
+    # 7 — the success:false events landed as real failed events
+    step("failed on-device events recorded (error rate > 0)",
+         kpi["errorRate"]["value"] > 0, f"errorRate={kpi['errorRate']['value']}")
 
     # 8 — the monitor pass raises a real alert (error rate > threshold)
     def find_alert():
@@ -167,6 +233,20 @@ def main() -> None:
     step("deployment live metrics updated",
          bool(d) and d["qps"] > 0 and d["errorsPct"] > 1.0,
          f"qps={d.get('qps')} errors%={d.get('errorsPct')}")
+
+    # 10 — idempotency: re-POST the IDENTICAL batch (same batchId). The server
+    # dedups on batchId, so the client event count must NOT increase.
+    def client_events() -> int:
+        return c.get(f"/api/models/{mid}/telemetry/meta").json()["sources"]["client"]
+
+    before = client_events()
+    rr2 = c.post(f"/api/v1/telemetry/{dep_id}/batch", headers=auth, json=batch)
+    acc2 = rr2.json()
+    after = client_events()
+    step("re-POST of same batchId is deduped (no double-count)",
+         rr2.status_code == 200 and after == before
+         and acc2["accepted"]["events"] == acc["accepted"]["events"],
+         f"before={before} after={after} reAccepted={acc2['accepted']['events']}")
 
     finish()
 

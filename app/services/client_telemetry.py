@@ -11,19 +11,23 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session
 
-from app.config import get_settings
+from app.config import get_settings, iso
 from app.dbmodels import (
     DeploymentRow,
     InferenceEventRow,
     ModelRow,
+    ProcessedBatchRow,
     TelemetrySnapshotRow,
     TelemetryWindowStatsRow,
 )
 from app.schemas.client_telemetry import TelemetryBatch
 
-_PAST_CLAMP = timedelta(days=7)
+# The SDK buffers telemetry durably on disk while offline, so accept batches that
+# were spooled for a while — but still reject wildly stale/future timestamps.
+_PAST_CLAMP = timedelta(days=30)
 _FUTURE_CLAMP = timedelta(minutes=5)
 
 
@@ -53,6 +57,19 @@ def ingest_batch(
     if total_items > settings.telemetry_batch_max:
         raise ValueError(
             f"batch exceeds {settings.telemetry_batch_max} items ({total_items})")
+
+    # Idempotency: a durable-spool segment carries the same batchId across retries.
+    # If we've already ingested this batch (reconnect or process restart re-sent
+    # it), ack it WITHOUT re-inserting so the SDK safely deletes its segment and
+    # the dashboard never double-counts.
+    if batch.batchId:
+        prior = session.get(ProcessedBatchRow, batch.batchId)
+        if prior is not None:
+            return ({
+                "events": prior.accepted_events,
+                "snapshots": prior.accepted_snapshots,
+                "windows": prior.accepted_windows,
+            }, prior.dropped)
 
     last_event_ts: str | None = None
     rows: list = []
@@ -113,6 +130,7 @@ def ingest_batch(
                 "gpuCount": int(snap.gpuCount),
                 "gpuMemTotalMb": round(float(snap.gpuMemTotalMb), 1),
                 "cudaVersion": snap.cudaVersion[:32],
+                "driverVersion": snap.driverVersion[:32],
             }),
             gpu_util_pct=(
                 round(float(snap.gpuUtilPct), 2) if snap.gpuUtilPct is not None else None),
@@ -147,7 +165,34 @@ def ingest_batch(
         dep.last_event_at = last_event_ts
         session.add(dep)
 
-    session.commit()
+    # Record the idempotency key in the same transaction as the rows, so a retry
+    # of this exact batch is recognised as a duplicate.
+    if batch.batchId:
+        session.add(ProcessedBatchRow(
+            batch_id=batch.batchId,
+            deployment_id=dep.id,
+            received_at=iso(now),
+            accepted_events=accepted["events"],
+            accepted_snapshots=accepted["snapshots"],
+            accepted_windows=accepted["windows"],
+            dropped=dropped,
+        ))
+
+    try:
+        session.commit()
+    except IntegrityError:
+        # A concurrent request committed the same batchId first — treat as the
+        # idempotent duplicate it is and return that batch's accepted counts.
+        session.rollback()
+        if batch.batchId:
+            prior = session.get(ProcessedBatchRow, batch.batchId)
+            if prior is not None:
+                return ({
+                    "events": prior.accepted_events,
+                    "snapshots": prior.accepted_snapshots,
+                    "windows": prior.accepted_windows,
+                }, prior.dropped)
+        raise
     return accepted, dropped
 
 
