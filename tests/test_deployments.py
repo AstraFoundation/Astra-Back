@@ -12,7 +12,7 @@ def test_deploy_mints_endpoint_and_key(make_live_model, deploy_model, client):
     data = r.json()
     dep, key = data["deployment"], data["apiKey"]
     assert dep["id"].startswith("dep_")
-    assert dep["endpoint"].endswith(f"/api/v1/infer/{dep['id']}")
+    assert dep["endpoint"].endswith(f"/api/v1/artifacts/{dep['id']}")
     assert dep["status"] == "live"
     # Plaintext key shown once; only a masked prefix is persisted/listed.
     assert key.startswith("astra_sk_live_")

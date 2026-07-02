@@ -1,9 +1,11 @@
 """Deployment lifecycle (cookie-authed dashboard side).
 
-Deploying a compressed model mints a DeploymentRow + an API key; the returned
-endpoint URL is the real, callable `/api/v1/infer/{id}` path that the SDK,
-simulator, or any external app hits. Live metrics on the row stay zero until the
-drift monitor fills them from real inference_events.
+Deploying a compressed model mints a DeploymentRow + an API key. Astra never runs
+the model server-side — inference is on-device via the SDK's AstraRunner — so the
+returned endpoint URL is the real, callable artifact-pull path
+`/api/v1/artifacts/{id}` that `AstraRunner.from_deployment(id, key)` fetches
+(and caches) before serving locally. Live metrics on the row stay zero until the
+drift monitor fills them from the SDK's closed-loop telemetry (inference_events).
 """
 
 from __future__ import annotations
@@ -28,7 +30,7 @@ from app.schemas.deployments import (
     UpdateDeploymentRequest,
 )
 from app.services import apikeys
-from app.services.inference import is_executable
+from app.services.formats import is_executable
 
 router = APIRouter(tags=["deployments"])
 
@@ -36,10 +38,10 @@ router = APIRouter(tags=["deployments"])
 _MAX_NAME = 80
 _MAX_DESC = 280
 
-# Endpoints are served locally by onnxruntime with the CPU execution provider
-# (see app/services/inference.py), not in a cloud region — so we label the
-# deployment with its real serving runtime instead of a fictional AWS region.
-_SERVING_RUNTIME = "ONNX Runtime (CPU)"
+# Models are served on-device by the SDK's AstraRunner (onnxruntime), not in a
+# cloud region — so we label the deployment with its real serving runtime
+# instead of a fictional AWS region.
+_SERVING_RUNTIME = "ONNX Runtime (on-device)"
 # Legacy rows / older demo seeds stored a fake AWS-style region (e.g.
 # "ap-northeast-2"); detect those so the list view shows the real runtime.
 _CLOUD_REGION_RE = re.compile(r"^[a-z]{2}-[a-z]+-\d+$")
@@ -151,7 +153,7 @@ def create_deployment(
         user_id=current_user.id,
         model_id=model_id,
         name=body.name or model.name,
-        endpoint=f"{_base_url(request)}/api/v1/infer/{dep_id}",
+        endpoint=f"{_base_url(request)}/api/v1/artifacts/{dep_id}",
         region=runtime,
         qps=0.0, p95=0.0, errors_pct=0.0, accuracy_drift=0.0,
         status=body.status,

@@ -1,16 +1,15 @@
 """In-process traffic generator — make the dashboard live without real users yet.
 
-A demo burst does two things:
-  1. Fires a few REAL inferences through the genuine serving path (run_inference)
-     so the end-to-end loop is actually exercised and produces real latencies.
-  2. Synthesizes a believable recent history (a diurnal-ish request curve with
-     lognormal latency jitter and the occasional incident — a latency spike or an
-     error burst) so the charts, percentiles, and drift alerts have something
-     real-shaped to show immediately.
+A demo burst synthesizes a believable recent history (a diurnal-ish request curve
+with lognormal latency jitter and the occasional incident — a latency spike or an
+error burst) so the charts, percentiles, and drift alerts have something
+real-shaped to show immediately.
 
-Everything is written as ordinary InferenceEventRow rows — identical to what the
-public /api/v1/infer endpoint records — so the aggregation + drift monitor treat
-simulated and organic traffic exactly the same.
+Everything is written as ordinary InferenceEventRow rows with source="client" —
+identical to what the on-device SDK's closed-loop telemetry ships to
+/api/v1/telemetry/{id}/batch — so the aggregation + drift monitor treat simulated
+and organic on-device traffic exactly the same. (Astra never runs user models
+server-side, so there is no server-measured latency to seed from.)
 """
 
 from __future__ import annotations
@@ -31,7 +30,6 @@ from app.dbmodels import (
     TelemetrySnapshotRow,
     TelemetryWindowStatsRow,
 )
-from app.services.inference import run_inference
 
 
 def _benchmark_p50(session: Session, model_id: str) -> float | None:
@@ -79,29 +77,15 @@ def simulate_burst(
     now = datetime.now(timezone.utc)
     rows: list[InferenceEventRow] = []
 
-    # 1) A few genuinely-served inferences — proves the path and measures latency.
-    base_latency: float | None = None
-    real_calls = min(5, max(1, count))
-    real_done = 0
-    for _ in range(real_calls):
-        try:
-            _, lat = run_inference(model.artifact_key, None, batch=1)
-        except Exception:  # noqa: BLE001 — fall back to synthesized latency
-            break
-        base_latency = lat if base_latency is None else (base_latency + lat) / 2
-        rows.append(InferenceEventRow(
-            user_id=model.user_id, model_id=model.id, deployment_id=dep.id,
-            ts=iso(now), latency_ms=round(lat, 3), success=True, region=dep.region,
-        ))
-        real_done += 1
+    # Base latency comes from the on-device benchmark (measured by the SDK /
+    # pipeline), never from a server-side inference — Astra doesn't run user
+    # models. Fall back to a small default when no benchmark exists yet.
+    base_latency = _benchmark_p50(session, model.id) or 5.0
 
-    if base_latency is None:
-        base_latency = _benchmark_p50(session, model.id) or 5.0
-
-    # 2) Synthesize the recent history with jitter + incidents.
+    # Synthesize the recent history with jitter + incidents.
     windows = _pick_incidents(now, hours) if incidents else []
     errors = 0
-    for _ in range(max(0, count - real_done)):
+    for _ in range(max(0, count)):
         # Weight timestamps toward busier hours so the request curve looks real.
         frac = random.random()
         ts_dt = now - timedelta(hours=hours) + timedelta(hours=hours * frac)
@@ -120,7 +104,7 @@ def simulate_burst(
         rows.append(InferenceEventRow(
             user_id=model.user_id, model_id=model.id, deployment_id=dep.id,
             ts=iso(ts_dt), latency_ms=round(lat, 3), success=success,
-            error_code=err_code, region=dep.region,
+            error_code=err_code, region=dep.region, source="client",
         ))
 
     session.add_all(rows)
@@ -128,7 +112,6 @@ def simulate_burst(
     return {
         "deploymentId": dep.id,
         "events": len(rows),
-        "realServed": real_done,
         "errors": errors,
         "incidents": [k for _, _, k in windows],
     }
@@ -136,9 +119,9 @@ def simulate_burst(
 
 # ── hardware-aware fleet simulation ──────────────────────────────────────────
 # Demo only (gated by ASTRA_TELEMETRY_SIM_ENABLED): on a machine without an
-# NVIDIA GPU the real serve path can't produce GPU/multi-hardware data, so this
-# injects a believable serving fleet — the same compressed artifact running on a
-# T4, an A10G, an Apple CoreML box and a hosted x86 CPU — so the per-hardware
+# NVIDIA GPU a single dev box can't produce GPU/multi-hardware data, so this
+# injects a believable on-device fleet — the same compressed artifact running on a
+# T4, an A10G, an Apple CoreML box and an x86 CPU host — so the per-hardware
 # speed + GPU resource views are visible and verifiable. Rows are written as
 # ordinary client telemetry (events + snapshots + windows), identical in shape
 # to what astra-ai-sdk ships, so aggregation treats them exactly like real fleets.
@@ -155,7 +138,8 @@ _FLEET: list[dict] = [
             "availableProviders": "TensorrtExecutionProvider,CUDAExecutionProvider,CPUExecutionProvider",
             "cpuModel": "Intel Xeon Platinum 8259CL", "cpuCores": 8, "ramTotalMb": 32000.0,
             "gpuName": "NVIDIA A10G", "gpuCount": 1, "gpuMemTotalMb": 24000.0,
-            "cudaVersion": "12.4", "ort": "1.18.1", "python": "3.11.9",
+            "cudaVersion": "12.4", "driverVersion": "550.90.07",
+            "ort": "1.18.1", "python": "3.11.9",
         },
         "gpu": {"util": (62, 84), "mem": (2600, 3400), "temp": (54, 68)},
     },
@@ -167,9 +151,21 @@ _FLEET: list[dict] = [
             "availableProviders": "CUDAExecutionProvider,CPUExecutionProvider",
             "cpuModel": "Intel Xeon E5-2686 v4", "cpuCores": 4, "ramTotalMb": 16000.0,
             "gpuName": "NVIDIA T4", "gpuCount": 1, "gpuMemTotalMb": 16000.0,
-            "cudaVersion": "12.2", "ort": "1.18.1", "python": "3.10.14",
+            "cudaVersion": "12.2", "driverVersion": "535.161.08",
+            "ort": "1.18.1", "python": "3.10.14",
         },
         "gpu": {"util": (48, 72), "mem": (1900, 2600), "temp": (49, 63)},
+    },
+    {
+        "host": "edge-snapdragon.local", "infer": 4.6, "cpu": (18, 34),
+        "runtime": {
+            "os": "Linux", "arch": "aarch64", "provider": "QNNExecutionProvider",
+            "activeProvider": "QNNExecutionProvider",
+            "availableProviders": "QNNExecutionProvider,CPUExecutionProvider",
+            "cpuModel": "Qualcomm Snapdragon 8 Gen 3", "cpuCores": 8, "ramTotalMb": 12000.0,
+            "ort": "1.18.1", "python": "3.11.8",
+        },
+        "gpu": None,
     },
     {
         "host": "edge-m3.local", "infer": 6.8, "cpu": (22, 38),
@@ -195,7 +191,7 @@ _FLEET: list[dict] = [
     },
 ]
 
-_SDK_VERSION = "0.2.0"
+_SDK_VERSION = "0.4.0"
 
 
 def _fleet_output() -> dict:

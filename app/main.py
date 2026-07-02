@@ -130,7 +130,6 @@ def create_app() -> FastAPI:
         dashboard,
         deployments,
         feedback,
-        infer,
         ingestion,
         meta,
         models,
@@ -144,12 +143,12 @@ def create_app() -> FastAPI:
     api.include_router(auth.router)
     # Public — static capability matrix the upload/marketing UI reads pre-login.
     api.include_router(meta.router)
-    # Public — the served inference endpoint authenticates with a deployment
-    # API key (Authorization: Bearer …), NOT the browser session cookie. This
-    # is the real-user traffic path; it must sit outside the cookie gate.
-    api.include_router(infer.router)
-    # Public — SDK telemetry ingestion + artifact pull, same Bearer-key auth
-    # as /v1/infer (the astra-ai-sdk pip package holds only a deployment key).
+    # Public — the on-device SDK's telemetry ingestion + artifact pull. These
+    # authenticate with a deployment API key (Authorization: Bearer …), NOT the
+    # browser session cookie, so they sit outside the cookie gate. Astra never
+    # runs user models server-side: inference happens on-device via the SDK's
+    # AstraRunner; the server only serves the compressed artifact + collects
+    # closed-loop telemetry.
     api.include_router(client_telemetry.router)
     # Every other router requires a valid session. Handlers that scope by owner
     # also inject CurrentUser; this router-level gate is defense-in-depth so a
@@ -184,8 +183,11 @@ def create_app() -> FastAPI:
             with Session(get_engine()) as s:
                 s.exec(text("SELECT 1"))
             checks["db"] = "ok"
-        except Exception as exc:  # noqa: BLE001
-            checks["db"] = f"error: {exc}"
+        except Exception:  # noqa: BLE001
+            # Coarse status only — /readyz is publicly reachable, so never leak the
+            # raw driver exception (internal hostnames, DB user/db, endpoints).
+            log.exception("readyz: db check failed")
+            checks["db"] = "error"
             ok = False
 
         if not settings.inline_jobs:
@@ -194,8 +196,9 @@ def create_app() -> FastAPI:
 
                 redis.Redis.from_url(settings.redis_url, socket_timeout=2).ping()
                 checks["redis"] = "ok"
-            except Exception as exc:  # noqa: BLE001
-                checks["redis"] = f"error: {exc}"
+            except Exception:  # noqa: BLE001
+                log.exception("readyz: redis check failed")
+                checks["redis"] = "error"
                 ok = False
 
         try:
@@ -203,8 +206,9 @@ def create_app() -> FastAPI:
 
             get_storage().ping()  # type: ignore[attr-defined]
             checks["storage"] = "ok"
-        except Exception as exc:  # noqa: BLE001
-            checks["storage"] = f"error: {exc}"
+        except Exception:  # noqa: BLE001
+            log.exception("readyz: storage check failed")
+            checks["storage"] = "error"
             ok = False
 
         if ok:

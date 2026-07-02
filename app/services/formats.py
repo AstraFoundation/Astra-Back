@@ -10,6 +10,11 @@ from __future__ import annotations
 from app.services.capabilities import _DEFAULT_FORMAT, capability_for_filename
 
 
+def is_executable(artifact_key: str | None) -> bool:
+    """True only for ONNX artifacts — weights-only .npz can't be served on-device."""
+    return bool(artifact_key) and artifact_key.endswith(".onnx")
+
+
 def infer_format(file_name: str) -> tuple[str, str, str]:
     """Returns (format, typeFull, typeShort)."""
     cap = capability_for_filename(file_name)

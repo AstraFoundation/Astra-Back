@@ -20,8 +20,7 @@ def test_simulate_makes_dashboard_live(make_live_model, deploy_model, client):
     deploy_model(mid)
 
     summary = _simulate(client, mid, count=300, hours=6, incidents=False)
-    assert summary["events"] >= 200
-    assert summary["realServed"] >= 1            # genuinely served through ORT
+    assert summary["events"] >= 200              # synthesized on-device (client) traffic
     assert "monitor" in summary                  # a monitor pass ran
 
     assert client.get(f"/api/models/{mid}/telemetry/meta").json()["source"] == "live"
