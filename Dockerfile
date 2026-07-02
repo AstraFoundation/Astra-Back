@@ -25,11 +25,14 @@ RUN pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.4.0"
 # Format readers/converters so UPLOADED Keras/.tflite/.pb/.safetensors/.mlmodel/
 # .gguf models take the REAL pipeline instead of failing at import time. On Linux
 # plain `tensorflow` is the CPU build (CUDA wheels come only from the
-# `tensorflow[and-cuda]` extra) and pulls keras 3 + h5py transitively. Pinned to
+# `tensorflow[and-cuda]` extra) and pulls keras 3 + h5py transitively. tf-keras
+# is the Keras-2 compat runtime (converters.py fallback) — without it legacy
+# Keras-2 .h5 full models silently degrade to weights-only analysis. Pinned to
 # the versions validated on the dev host. Its own cached layer (independent of
 # app code) so editing the backend doesn't trigger a TensorFlow reinstall.
 RUN pip install \
         "tensorflow==2.21.0" \
+        "tf-keras==2.21.0" \
         "tf2onnx==1.17.0" \
         "h5py==3.14.0" \
         "safetensors==0.7.0" \
