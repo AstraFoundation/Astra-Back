@@ -117,3 +117,42 @@ def create_issue_for_feedback(feedback_id: str, base_url: str | None = None) -> 
             log.info("feedback %s → GitHub issue %s", feedback_id, row.github_issue_url)
     except Exception:  # noqa: BLE001 — a side effect must never break feedback intake
         log.exception("GitHub issue creation errored for feedback %s", feedback_id)
+
+
+def check_feedback_github_reachable() -> str | None:
+    """Startup probe for the feedback→GitHub bridge.
+
+    ``create_issue_for_feedback`` swallows every failure by design (a GitHub outage
+    must never drop feedback), so a wrong repo or a revoked/insufficient token fails
+    *silently* forever — exactly the bug that let renamed-repo 404s go unnoticed.
+    This probe is called once at startup to surface that class of misconfig loudly.
+
+    Returns ``None`` when the feature is disabled or the repo answers 200; otherwise
+    a single human-readable warning string the caller can log. Never raises — a
+    network error is turned into a warning too, so it is safe to call from app
+    startup without ever blocking boot.
+    """
+    settings = get_settings()
+    if not settings.github_feedback_enabled:
+        return None
+    repo = settings.feedback_github_repo
+    try:
+        resp = httpx.get(
+            f"{_GITHUB_API}/repos/{repo}",
+            headers=_gh_headers(settings.feedback_github_token),
+            timeout=5.0,
+        )
+    except Exception as exc:  # noqa: BLE001 — a probe must never raise into startup
+        return (
+            f"Feedback→GitHub repo {repo!r} reachability check could not complete "
+            f"({type(exc).__name__}: {exc}). Feedback is still stored in the DB, but "
+            "whether an issue can be opened is unconfirmed."
+        )
+    if resp.status_code == 200:
+        return None
+    return (
+        f"Feedback→GitHub repo {repo!r} is UNREACHABLE (HTTP {resp.status_code} "
+        f"{resp.reason_phrase}) — submitted feedback will be stored in the DB but NO "
+        "GitHub issue will be opened. Check ASTRA_FEEDBACK_GITHUB_REPO and that the "
+        "PAT can access that repo with Issues: write."
+    )

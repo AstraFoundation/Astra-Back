@@ -50,6 +50,21 @@ async def lifespan(app: FastAPI):
     for warning in settings.validate_runtime():  # raises on misconfig (fail fast)
         log.warning(warning)
 
+    # Proactive feedback→GitHub reachability probe. The create-issue side effect
+    # swallows failures (a GitHub outage must never drop feedback), so a wrong repo
+    # or a revoked/insufficient token would otherwise fail silently forever — the
+    # exact class of bug a renamed issues repo caused. Surface it loudly at boot.
+    try:
+        from app.services.github_feedback import check_feedback_github_reachable
+
+        gh_warning = check_feedback_github_reachable()
+        if gh_warning:
+            log.warning(gh_warning)
+        elif settings.github_feedback_enabled:
+            log.info("Feedback→GitHub repo %s reachable", settings.feedback_github_repo)
+    except Exception:  # noqa: BLE001 — a probe must never block startup
+        log.exception("feedback→GitHub reachability probe failed")
+
     # Postgres schema is owned by Alembic; create_all is the SQLite/test path.
     if settings.is_sqlite:
         init_db()
