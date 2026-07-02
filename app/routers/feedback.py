@@ -42,6 +42,7 @@ from app.services.storage import StorageError, feedback_attachment_key, get_stor
 router = APIRouter(tags=["feedback"])
 
 _MAX_MESSAGE = 4000
+_MAX_TITLE = 200
 _MAX_PAGE = 300
 _MAX_LOCALE = 16
 
@@ -61,6 +62,7 @@ async def submit_feedback(
     current_user: CurrentUser,
     background: BackgroundTasks,
     kind: FeedbackKind = Form("feature"),
+    title: str | None = Form(None),
     message: str = Form(...),
     page: str | None = Form(None),
     locale: str | None = Form(None),
@@ -106,6 +108,7 @@ async def submit_feedback(
         email=current_user.email,
         name=current_user.name,
         kind=kind,
+        title=(title.strip()[:_MAX_TITLE] or None) if title else None,
         message=clean,
         page=page.strip()[:_MAX_PAGE] if page else None,
         locale=locale.strip()[:_MAX_LOCALE] if locale else None,

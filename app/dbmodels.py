@@ -311,6 +311,8 @@ class FeedbackRow(SQLModel, table=True):
     email: str = ""                    # submitter snapshot (from the session)
     name: str = ""
     kind: str = "feature"             # feature|bug|question|other
+    title: str | None = None          # user-written headline; the issue title is
+                                      # "[Kind] {title}" (falls back to message line 1)
     message: str
     page: str | None = None           # route the user was on at submit time
     locale: str | None = None         # UI locale at submit time

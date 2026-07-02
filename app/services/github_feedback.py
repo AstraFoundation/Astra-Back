@@ -29,11 +29,35 @@ _KIND_LABEL = {
     "question": "question",
     "other": None,
 }
+# Kind → the human title prefix always forced onto the issue title, e.g.
+# "[Feature] Dark mode toggle". Kept capitalized (distinct from the lowercase
+# _KIND_LABEL used for GitHub labels).
+_KIND_PREFIX = {
+    "feature": "Feature",
+    "bug": "Bug",
+    "question": "Question",
+    "other": "Other",
+}
+_MAX_TITLE = 120
+
+
+def _gh_headers(token: str) -> dict[str, str]:
+    """The auth + version headers every GitHub REST call in this module shares."""
+    return {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
 
 
 def _issue_payload(row: FeedbackRow, base_url: str | None = None) -> dict:
     stripped = row.message.strip()
     first_line = stripped.splitlines()[0] if stripped else "(no message)"
+    # An explicit user title wins; otherwise fall back to the message's first line
+    # (the pre-title behavior). Either way the kind is force-prefixed as
+    # [Feature]/[Bug]/… so every issue is triaged at a glance.
+    headline = (row.title or "").strip() or first_line
+    prefix = _KIND_PREFIX.get(row.kind, row.kind.capitalize())
     who = f"{row.name} <{row.email}>" if row.email else (row.name or row.user_id or "unknown")
     body = (
         f"{row.message}\n\n"
@@ -55,7 +79,7 @@ def _issue_payload(row: FeedbackRow, base_url: str | None = None) -> dict:
     extra = _KIND_LABEL.get(row.kind)
     if extra:
         labels.append(extra)
-    return {"title": f"[{row.kind}] {first_line[:80]}", "body": body, "labels": labels}
+    return {"title": f"[{prefix}] {headline[:_MAX_TITLE]}", "body": body, "labels": labels}
 
 
 def create_issue_for_feedback(feedback_id: str, base_url: str | None = None) -> None:
@@ -75,11 +99,7 @@ def create_issue_for_feedback(feedback_id: str, base_url: str | None = None) -> 
                 return
             resp = httpx.post(
                 f"{_GITHUB_API}/repos/{settings.feedback_github_repo}/issues",
-                headers={
-                    "Authorization": f"Bearer {settings.feedback_github_token}",
-                    "Accept": "application/vnd.github+json",
-                    "X-GitHub-Api-Version": "2022-11-28",
-                },
+                headers=_gh_headers(settings.feedback_github_token),
                 json=_issue_payload(row, base_url),
                 timeout=15.0,
             )
