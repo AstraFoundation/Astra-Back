@@ -50,11 +50,11 @@ done
 curl -fsS "$BASE_URL/healthz" >/dev/null || { echo "backend never became healthy"; cat "$RUNDIR/backend.log"; exit 1; }
 echo "   backend up (pid $BACKEND_PID)"
 
-echo "── 2. build wheel + fresh venv with [serve]"
+echo "── 2. build wheel + fresh venv (onnxruntime included by default)"
 rm -rf "$DIST" && python3 -m build --wheel --outdir "$DIST" "$ROOT/clients/python" > /dev/null
 WHEEL="$(ls "$DIST"/astra_ai_sdk-*.whl)"
 rm -rf "$VENV" && python3 -m venv "$VENV"
-"$VENV/bin/pip" install -q "${WHEEL}[serve]"
+"$VENV/bin/pip" install -q "${WHEEL}"
 echo "   $("$VENV/bin/python" -c 'import astra_sdk,sys; print("astra-ai-sdk", astra_sdk.__version__, "from", astra_sdk.__file__)')"
 
 echo "── 3. provision a deployment"

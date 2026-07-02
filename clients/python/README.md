@@ -4,8 +4,8 @@ Serve **Astra-compressed models** on your own hardware — Astra never runs your
 model server-side — and keep the Astra dashboard monitoring them while they run.
 
 ```bash
-pip install 'astra-ai-sdk[serve]'         # on-device ONNX serving (onnxruntime, numpy)
-pip install 'astra-ai-sdk[serve,system]'  # + precise CPU/RSS metrics (psutil)
+pip install astra-ai-sdk              # everything you need — pull, run, telemetry (onnxruntime + numpy included)
+pip install 'astra-ai-sdk[system]'    # optional: finer CPU/RSS host metrics (psutil)
 ```
 
 Exports: `AstraRunner`, `AstraRunnerError`, `pull_artifact`, `AstraTelemetryReporter`,

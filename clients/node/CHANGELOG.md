@@ -5,6 +5,33 @@ single `GET /api/sdk/version` describes both clients truthfully.
 
 ## Unreleased
 
+- **Telemetry — batch can no longer exceed the server's item cap.** A flush now
+  counts events + snapshots + windows against one combined 450-item budget
+  (before, a sustained-load flush could pack up to 578 items and get 422'd).
+- **Telemetry — permanent 4xx no longer blocks the spool.** A segment the server
+  can never accept (e.g. `422 batch_too_large` from an older SDK, `404` after
+  the deployment was deleted) is now counted as dropped and removed instead of
+  being retried forever ahead of every younger segment. Auth (401/403), paused
+  (409) and throttling (408/429) responses still keep the segment for retry.
+
+## 0.5.0 — 2026-07-02
+
+- **One install command.** Docs simplified to `npm i astra-ai-sdk` — `onnxruntime-node`
+  is an `optionalDependency` that npm installs automatically, so there's no need to
+  add it explicitly. (It stays optional, not a hard dependency, so `npm i` still
+  succeeds on platforms with no prebuilt binary; `AstraRunner`/`astra serve` then
+  tells you to add it.) Bumped in lockstep with the Python client, which folded
+  onnxruntime+numpy into its core deps (no more `[serve]` extra). No API changes.
+
+## 0.4.2 — 2026-07-02
+
+- **Docs — package description corrected to on-device only.** The npm description
+  no longer says "hosted or local ONNX serving"; Astra never runs your model
+  server-side (hosted inference was removed in 0.3.0). No code changes; version
+  bumped in lockstep with the Python client.
+
+## 0.4.1 — 2026-07-02
+
 - **Fix — honest execution-provider reporting.** Telemetry snapshots now report
   `availableProviders` from onnxruntime-node's `listSupportedBackends()` (the EPs
   the build actually ships, e.g. `CoreMLExecutionProvider`) instead of echoing

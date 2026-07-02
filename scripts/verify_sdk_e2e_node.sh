@@ -20,12 +20,12 @@ echo "── 1. build + pack the npm package"
 TARBALL="$(ls -t /tmp/astra-ai-sdk-*.tgz | head -1)"
 echo "   $TARBALL"
 
-echo "── 2. fresh project in /tmp + install the tarball + onnxruntime-node"
+echo "── 2. fresh project in /tmp + install the tarball (onnxruntime-node auto)"
 rm -rf "$WORK" /tmp/astra-node-cache && mkdir -p "$WORK"
 ( cd "$WORK" \
     && npm init -y >/dev/null 2>&1 \
     && npm pkg set type=module >/dev/null 2>&1 \
-    && npm install -q "$TARBALL" onnxruntime-node >/dev/null 2>&1 )
+    && npm install -q "$TARBALL" >/dev/null 2>&1 )
 node -e "console.log('   astra-ai-sdk', require('$WORK/node_modules/astra-ai-sdk/package.json').version)"
 # Run the client FROM /tmp so the bare \"astra-ai-sdk\" import resolves to the
 # installed tarball (ESM resolves relative to the importing file's location).

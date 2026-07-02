@@ -14,10 +14,10 @@ The artifact is pulled once via the API-key-authed
 GET /api/v1/artifacts/{deployment_id} and cached on disk keyed by its sha256,
 so restarts don't re-download. Every run() is measured (pre/infer/post) and
 shipped to the Astra dashboard by the background AstraTelemetryReporter, together
-with periodic system snapshots and windowed input/output stats — the same
-closed loop hosted serving gets, but on your hardware.
+with periodic system snapshots and windowed input/output stats — a full
+closed-loop, entirely on your own hardware.
 
-Requires the [serve] extra:  pip install 'astra-ai-sdk[serve]'
+Install:  pip install astra-ai-sdk   (onnxruntime + numpy come bundled)
 """
 
 from __future__ import annotations
@@ -37,14 +37,16 @@ class AstraRunnerError(Exception):
     pass
 
 
-def _require_serve_extra():
+def _require_runtime():
+    # onnxruntime + numpy are core dependencies of astra-ai-sdk, so this normally
+    # always passes; it only trips on a broken/partial install. Defensive.
     try:
         import numpy
         import onnxruntime
-    except ImportError as exc:  # pragma: no cover - exercised only without extra
+    except ImportError as exc:  # pragma: no cover
         raise AstraRunnerError(
-            "Local serving needs onnxruntime + numpy — install the extra: "
-            "pip install 'astra-ai-sdk[serve]'"
+            "onnxruntime + numpy are required to run models and ship with "
+            "astra-ai-sdk — reinstall it: pip install --force-reinstall astra-ai-sdk"
         ) from exc
     return numpy, onnxruntime
 
@@ -59,7 +61,7 @@ class AstraRunner:
         reporter: AstraTelemetryReporter | None = None,
         providers: list[str] | None = None,
     ) -> None:
-        np, ort = _require_serve_extra()
+        np, ort = _require_runtime()
         self._np = np
         self._reporter = reporter
         self._session = ort.InferenceSession(
@@ -97,7 +99,7 @@ class AstraRunner:
 
         base_url defaults to the hosted Astra origin (override with the
         ASTRA_BASE_URL env var or the base_url keyword)."""
-        _require_serve_extra()
+        _require_runtime()
         base = resolve_base_url(base_url)
         path = pull_artifact(
             deployment_id, api_key, base_url=base,
@@ -130,7 +132,7 @@ class AstraRunner:
         SDK Hub "Download Artifact" button. No deployment / network needed.
         Telemetry is OFF unless you also pass deployment_id + api_key (then local
         runs still report to that deployment)."""
-        _require_serve_extra()
+        _require_runtime()
         runner = cls(model_path, providers=providers)
         want = report_telemetry or bool(deployment_id and api_key)
         if want and deployment_id and api_key:

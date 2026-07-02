@@ -1,7 +1,7 @@
 {
   "name": "astra-ai-sdk",
-  "version": "0.4.0",
-  "description": "Serve Astra-compressed models anywhere — hosted or local ONNX serving with built-in telemetry that feeds the Astra dashboard",
+  "version": "0.5.0",
+  "description": "Run Astra-compressed models on-device with local ONNX serving and built-in closed-loop telemetry that feeds the Astra dashboard",
   "type": "module",
   "license": "MIT",
   "author": "Astra",

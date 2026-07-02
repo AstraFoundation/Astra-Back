@@ -18,9 +18,9 @@ rm -rf "$DIST" && python3 -m build --wheel --outdir "$DIST" "$ROOT/clients/pytho
 WHEEL="$(ls "$DIST"/astra_ai_sdk-*.whl)"
 echo "   $WHEEL"
 
-echo "── 2. fresh venv + install from wheel (with [serve] extra)"
+echo "── 2. fresh venv + install from wheel ((onnxruntime included by default) extra)"
 rm -rf "$VENV" && python3 -m venv "$VENV"
-"$VENV/bin/pip" install -q "${WHEEL}[serve]"
+"$VENV/bin/pip" install -q "${WHEEL}"
 "$VENV/bin/python" -c "import astra_sdk; print('   astra-ai-sdk', astra_sdk.__version__)"
 
 echo "── 3. provision a deployment on the backend ($BASE_URL)"

@@ -1,5 +1,39 @@
 # Changelog
 
+## Unreleased
+
+- **Telemetry — batch can no longer exceed the server's item cap.** A flush now
+  counts events + snapshots + windows against one combined 450-item budget
+  (before, a sustained-load flush could pack up to 578 items and get 422'd).
+- **Telemetry — permanent 4xx no longer blocks the spool.** A segment the server
+  can never accept (e.g. `422 batch_too_large` from an older SDK, `404` after
+  the deployment was deleted) is now counted as dropped and removed instead of
+  being retried forever ahead of every younger segment. Auth (401/403), paused
+  (409) and throttling (408/429) responses still keep the segment for retry.
+
+## 0.5.0 — 2026-07-02
+
+- **One install, no extras.** `onnxruntime` + `numpy` are now **core dependencies**,
+  so `pip install astra-ai-sdk` is all you need to pull, run, and ship telemetry —
+  the SDK is on-device only, so serving is its whole purpose. The `[serve]` extra
+  is kept as an empty back-compat alias, so `pip install 'astra-ai-sdk[serve]'`
+  still works. `[system]` (psutil, finer host metrics) and `[gpu]` (nvidia-ml-py,
+  NVIDIA GPU telemetry) remain optional. No API changes.
+
+## 0.4.2 — 2026-07-02
+
+- **Docs — package description corrected to on-device only.** The PyPI description
+  no longer says "hosted or local ONNX serving"; Astra never runs your model
+  server-side (hosted inference removed in 0.3.0). No code changes; version bumped
+  in lockstep with the Node client.
+
+## 0.4.1 — 2026-07-02
+
+- **Version bump to stay in lockstep with the Node client's 0.4.1** (honest
+  execution-provider reporting fix). No functional changes to the Python client —
+  it already reports available/active ORT providers accurately; this keeps both
+  clients on one version so the dashboard's `GET /api/sdk/version` is truthful.
+
 ## 0.4.0
 
 - **Breaking — public classes rebranded to the Astra namespace.** `LocalRunner`

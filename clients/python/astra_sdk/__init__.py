@@ -3,7 +3,7 @@
 Astra never runs your model server-side. The SDK pulls the compressed artifact
 once and serves it on YOUR hardware with onnxruntime:
 
-    pip install 'astra-ai-sdk[serve]'
+    pip install astra-ai-sdk
 
     from astra_sdk import AstraRunner
 
@@ -33,4 +33,4 @@ __all__ = [
     "AstraTelemetryReporter",
     "pull_artifact",
 ]
-__version__ = "0.4.0"
+__version__ = "0.5.0"

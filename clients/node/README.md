@@ -5,11 +5,12 @@ model server-side — and keep the Astra dashboard monitoring them while they ru
 The Node client mirrors the [Python `astra-ai-sdk`](../python) API.
 
 ```bash
-npm i astra-ai-sdk onnxruntime-node   # on-device ONNX serving on your hardware
+npm i astra-ai-sdk   # on-device ONNX serving on your hardware
 ```
 
 Requires **Node ≥ 18.17** (global `fetch`). `onnxruntime-node` is an optional
-dependency — install it to use `AstraRunner` / `astra serve`.
+dependency and is pulled in automatically by the command above; on a platform
+with no prebuilt binary, `AstraRunner` / `astra serve` tells you to add it.
 
 Exports: `AstraRunner`, `AstraRunnerError`, `pullArtifact`, `AstraTelemetryReporter`,
 `telemetryEnabled`, `AstraApiError`, `VERSION`.

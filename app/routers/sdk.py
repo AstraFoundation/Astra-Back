@@ -46,7 +46,7 @@ def _sdk_version() -> str:
             return match.group(1)
     except Exception:  # noqa: BLE001 — repo layout differs in some deployments
         pass
-    return "0.4.0"
+    return "0.5.0"
 
 
 @router.get("/version")

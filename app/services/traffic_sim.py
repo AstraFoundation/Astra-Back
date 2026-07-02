@@ -191,7 +191,7 @@ _FLEET: list[dict] = [
     },
 ]
 
-_SDK_VERSION = "0.4.0"
+_SDK_VERSION = "0.5.0"
 
 
 def _fleet_output() -> dict:

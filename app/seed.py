@@ -22,7 +22,9 @@ from sqlmodel import Session, select
 from app.dbmodels import RecipeRow, SdkSnippetRow
 
 # Bump when snippets/recipes change — seeded DBs are upgraded in place.
-_DOCS_VERSION = "10"
+# 12: install commands simplified to `pip install astra-ai-sdk` / `npm i astra-ai-sdk`
+#     (onnxruntime is a core dep now — no `[serve]` extra, no explicit onnxruntime-node).
+_DOCS_VERSION = "12"
 
 # "Run the compressed model in YOUR code" guide. Each snippet uses the astra-ai-sdk
 # package as an embeddable library — `runner.run(inputs)` inside the user's own
@@ -33,7 +35,7 @@ _SNIPPETS: dict[str, dict] = {
     "python": {
         "language": "python", "filename": "infer.py",
         "code": '''# Run the compressed model inside your own code — no server, no base URL.
-# pip install 'astra-ai-sdk[serve]'
+# pip install astra-ai-sdk
 from astra_sdk import AstraRunner
 
 # Deployment id + key from the Deployments tab (key shown once when minted).
@@ -51,7 +53,7 @@ runner.close()                            # flush telemetry on shutdown
     "node": {
         "language": "node", "filename": "infer.ts",
         "code": '''// Run the compressed model inside your own code — no server, no base URL.
-// npm i astra-ai-sdk onnxruntime-node
+// npm i astra-ai-sdk
 import { AstraRunner } from "astra-ai-sdk";
 
 // Deployment id + key from the Deployments tab (key shown once when minted).
@@ -68,7 +70,7 @@ await runner.close();''',
     "cli": {
         "language": "cli", "filename": "serve.sh",
         "code": '''# Optional zero-code path: wrap the compressed model in a local POST /infer.
-pip install 'astra-ai-sdk[serve]'      # or: npm i -g astra-ai-sdk onnxruntime-node
+pip install astra-ai-sdk      # or: npm i -g astra-ai-sdk
 
 export ASTRA_DEPLOYMENT_ID=dep_...         # Deployments tab -> deployment id
 export ASTRA_API_KEY=astra_sk_live_...     # shown once when the key is minted
