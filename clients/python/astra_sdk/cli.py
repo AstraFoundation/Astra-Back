@@ -4,7 +4,7 @@
     astra serve --base-url URL --deployment dep_x --api-key KEY --port 8765
     astra bench --base-url URL --deployment dep_x --api-key KEY -n 200
 
-stdlib-only (argparse + http.server); the heavy lifting lives in LocalRunner.
+stdlib-only (argparse + http.server); the heavy lifting lives in AstraRunner.
 """
 
 from __future__ import annotations
@@ -44,10 +44,10 @@ def cmd_pull(args) -> int:
 
 
 def cmd_bench(args) -> int:
-    from .runner import LocalRunner
+    from .runner import AstraRunner
 
     _require(args)
-    runner = LocalRunner.from_deployment(
+    runner = AstraRunner.from_deployment(
         args.deployment, args.api_key, base_url=args.base_url, cache_dir=args.cache_dir)
     lats: list[float] = []
     try:
@@ -73,10 +73,10 @@ def cmd_bench(args) -> int:
 def cmd_serve(args) -> int:
     import http.server
 
-    from .runner import LocalRunner
+    from .runner import AstraRunner
 
     _require(args)
-    runner = LocalRunner.from_deployment(
+    runner = AstraRunner.from_deployment(
         args.deployment, args.api_key, base_url=args.base_url, cache_dir=args.cache_dir)
 
     class Handler(http.server.BaseHTTPRequestHandler):

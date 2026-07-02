@@ -13,6 +13,6 @@ export default defineConfig({
   clean: true,
   sourcemap: true,
   // onnxruntime-node is an optional peer; never bundle it — it's loaded at
-  // runtime via dynamic import only when LocalRunner is used.
+  // runtime via dynamic import only when AstraRunner is used.
   external: ["onnxruntime-node"],
 });

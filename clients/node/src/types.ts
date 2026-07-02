@@ -23,7 +23,7 @@ export interface TensorInput {
 }
 
 /** Inputs for a single inference: input-name → tensor. `null` synthesizes a
- *  random probe (smoke tests / benchmarks), matching `LocalRunner.run(None)`. */
+ *  random probe (smoke tests / benchmarks), matching `AstraRunner.run(None)`. */
 export type RunInput = Record<string, TensorInput> | null | undefined;
 
 export interface RunOutput {

@@ -22,7 +22,7 @@ def test_snippets_reference_only_real_apis(client):
     # The real packages / CLI / SDK class appear...
     assert "astra-ai-sdk" in all_code
     assert "astra serve" in all_code            # real CLI command (cli.py)
-    assert "LocalRunner" in all_code            # real SDK serving class (runner.py)
+    assert "AstraRunner" in all_code            # real SDK serving class (runner.py)
     # ...the Node tab uses the real npm package as a library, not raw onnxruntime...
     assert 'from "astra-ai-sdk"' in all_code       # real npm import (clients/node)
     assert "fromDeployment" in all_code         # real Node SDK entrypoint

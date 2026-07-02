@@ -22,7 +22,7 @@ def resolve_base_url(base_url: str | None) -> str:
     return (base_url or os.environ.get("ASTRA_BASE_URL") or DEFAULT_BASE_URL).rstrip("/")
 
 
-class ApiError(Exception):
+class AstraApiError(Exception):
     """Non-2xx response from the Astra backend."""
 
     def __init__(self, status: int, code: str, message: str) -> None:
@@ -32,7 +32,7 @@ class ApiError(Exception):
         self.message = message
 
 
-def error_from_response(resp: httpx.Response) -> ApiError:
+def error_from_response(resp: httpx.Response) -> AstraApiError:
     detail: dict[str, Any] = {}
     try:
         body = resp.json()
@@ -41,7 +41,7 @@ def error_from_response(resp: httpx.Response) -> ApiError:
             detail = {"message": str(detail)}
     except ValueError:
         pass
-    return ApiError(
+    return AstraApiError(
         resp.status_code,
         detail.get("code", "error"),
         detail.get("message", resp.text[:500]),

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // astra CLI — pull / serve / bench a Astra deployment locally.
 // Mirrors clients/python/astra_sdk/cli.py. stdlib-only (node:util + node:http);
-// the heavy lifting lives in LocalRunner.
+// the heavy lifting lives in AstraRunner.
 //
 //     astra pull  --base-url URL --deployment dep_x --api-key KEY
 //     astra serve --base-url URL --deployment dep_x --api-key KEY --port 8765
@@ -10,7 +10,7 @@
 import { createServer } from "node:http";
 import { parseArgs } from "node:util";
 
-import { LocalRunner, pullArtifact } from "./runner.js";
+import { AstraRunner, pullArtifact } from "./runner.js";
 
 const round3 = (x: number): number => Math.round(x * 1000) / 1000;
 
@@ -58,7 +58,7 @@ async function main(): Promise<number> {
 
     case "bench": {
       require();
-      const runner = await LocalRunner.fromDeployment({
+      const runner = await AstraRunner.fromDeployment({
         baseUrl,
         deploymentId: deployment!,
         apiKey: apiKey!,
@@ -96,7 +96,7 @@ async function main(): Promise<number> {
 
     case "serve": {
       require();
-      const runner = await LocalRunner.fromDeployment({
+      const runner = await AstraRunner.fromDeployment({
         baseUrl,
         deploymentId: deployment!,
         apiKey: apiKey!,

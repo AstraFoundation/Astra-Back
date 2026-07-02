@@ -4,12 +4,12 @@
 
 const RETRYABLE_STATUS = new Set([429, 502, 503, 504]);
 
-export class ApiError extends Error {
+export class AstraApiError extends Error {
   readonly status: number;
   readonly code: string;
   constructor(status: number, code: string, message: string) {
     super(`[${status}] ${code}: ${message}`);
-    this.name = "ApiError";
+    this.name = "AstraApiError";
     this.status = status;
     this.code = code;
   }
@@ -27,8 +27,8 @@ export function resolveBaseUrl(baseUrl?: string): string {
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
-/** Parse a non-2xx response into an ApiError (reads `detail.code/message`). */
-export async function errorFromResponse(resp: Response): Promise<ApiError> {
+/** Parse a non-2xx response into an AstraApiError (reads `detail.code/message`). */
+export async function errorFromResponse(resp: Response): Promise<AstraApiError> {
   let raw = "";
   try {
     raw = await resp.text();
@@ -53,7 +53,7 @@ export async function errorFromResponse(resp: Response): Promise<ApiError> {
   } catch {
     /* not JSON — keep the raw text */
   }
-  return new ApiError(resp.status, code, message || resp.statusText);
+  return new AstraApiError(resp.status, code, message || resp.statusText);
 }
 
 export interface HttpRequestOptions {
@@ -132,7 +132,7 @@ export class HttpSession {
       }
     }
     if (lastErr instanceof Error) throw lastErr;
-    throw new ApiError(0, "error", String(lastErr));
+    throw new AstraApiError(0, "error", String(lastErr));
   }
 
   // Symmetry with the Python API; there is no persistent client to tear down.

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """SDK e2e step 4 — runs with the WHEEL-INSTALLED astra_sdk from /tmp.
 
-Pulls the deployed artifact, serves it locally with LocalRunner, fires
+Pulls the deployed artifact, serves it locally with AstraRunner, fires
 normal traffic then distribution-shifted traffic, and flushes telemetry.
 No repo imports — only the installed package + numpy.
 """
@@ -23,13 +23,13 @@ def main() -> None:
     import numpy as np
 
     import astra_sdk
-    from astra_sdk import LocalRunner
+    from astra_sdk import AstraRunner
 
     assert not astra_sdk.__file__.startswith("/Users/kwonminjae/Desktop/Astra"), (
         f"must import the INSTALLED wheel, got {astra_sdk.__file__}")
     print(f"   using {astra_sdk.__file__}")
 
-    runner = LocalRunner.from_deployment(
+    runner = AstraRunner.from_deployment(
         h["deploymentId"], h["apiKey"], base_url=h["baseUrl"],
         cache_dir="/tmp/astra-ai-sdk-cache",
     )

@@ -6,10 +6,11 @@ real pipeline events. The only seeded rows are SDK documentation (quick-start
 snippets and recipes), which are static docs content, not operational state.
 
 Every snippet below targets APIs that actually exist: the astra-ai-sdk packages
-(Python `pip install astra-ai-sdk`, Node `npm i astra-ai-sdk`) — AstraClient /
-LocalRunner / `astra` CLI — and the real REST endpoints (/api/v1/infer,
-/api/v1/artifacts, /api/v1/telemetry). A version marker row lets upgrades
-replace stale docs rows in already-seeded databases.
+(Python `pip install astra-ai-sdk`, Node `npm i astra-ai-sdk`) — AstraRunner /
+`astra` CLI for ON-DEVICE serving — and the real REST endpoints the SDK uses
+(/api/v1/artifacts to pull the compressed model, /api/v1/telemetry for the
+closed loop). Astra never runs the model server-side. A version marker row lets
+upgrades replace stale docs rows in already-seeded databases.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ from sqlmodel import Session, select
 from app.dbmodels import RecipeRow, SdkSnippetRow
 
 # Bump when snippets/recipes change — seeded DBs are upgraded in place.
-_DOCS_VERSION = "8"
+_DOCS_VERSION = "10"
 
 # "Run the compressed model in YOUR code" guide. Each snippet uses the astra-ai-sdk
 # package as an embeddable library — `runner.run(inputs)` inside the user's own
@@ -33,12 +34,13 @@ _SNIPPETS: dict[str, dict] = {
         "language": "python", "filename": "infer.py",
         "code": '''# Run the compressed model inside your own code — no server, no base URL.
 # pip install 'astra-ai-sdk[serve]'
-from astra_sdk import LocalRunner
+from astra_sdk import AstraRunner
 
 # Deployment id + key from the Deployments tab (key shown once when minted).
 # Pulls + caches the compressed artifact, runs onnxruntime locally, and ships
-# latency / system / drift telemetry back to this dashboard.
-runner = LocalRunner.from_deployment("dep_...", "astra_sk_live_...")
+# latency / system / drift telemetry back to this dashboard — buffered on disk
+# when offline and flushed the moment you reconnect (closed loop).
+runner = AstraRunner.from_deployment("dep_...", "astra_sk_live_...")
 
 out = runner.run({"input": my_array})     # local inference, right here in your code
 print(out["latencyMs"], out["outputs"])
@@ -50,10 +52,10 @@ runner.close()                            # flush telemetry on shutdown
         "language": "node", "filename": "infer.ts",
         "code": '''// Run the compressed model inside your own code — no server, no base URL.
 // npm i astra-ai-sdk onnxruntime-node
-import { LocalRunner } from "astra-ai-sdk";
+import { AstraRunner } from "astra-ai-sdk";
 
 // Deployment id + key from the Deployments tab (key shown once when minted).
-const runner = await LocalRunner.fromDeployment({
+const runner = await AstraRunner.fromDeployment({
   deploymentId: "dep_...",
   apiKey: "astra_sk_live_...",
 });
@@ -83,13 +85,13 @@ _RECIPES: list[dict] = [
         "title": "Deploy + mint an API key",
         "description": "Import a model, wait for optimization, create a "
                        "deployment on the Deployments tab and copy the key — "
-                       "it authenticates /api/v1/infer, /artifacts and "
-                       "/telemetry for that deployment.",
+                       "it authenticates /api/v1/artifacts (pull the model) and "
+                       "/api/v1/telemetry (closed loop) for that deployment.",
     },
     {
         "id": "r2", "language": "python",
         "title": "Local serving with live drift alerts",
-        "description": "LocalRunner.from_deployment() serves the compressed "
+        "description": "AstraRunner.from_deployment() serves the compressed "
                        "ONNX on your hardware while shipping latency, system "
                        "and input/output stats — prediction/input drift "
                        "alerts appear on the Telemetry tab automatically.",

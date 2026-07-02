@@ -140,7 +140,7 @@ python3 scripts/verify_real_models.py --base http://localhost:8000 \
   기본값). arq 워커를 운영하는 스케일드 배포는 0으로 끄고 워커 cron을 사용하세요.
 - 서빙 아티팩트는 guarantee 사다리(OFS≥`ASTRA_TAU`)를 통과한 인증본입니다 —
   인제스션 로그에 certificate가 남습니다.
-- `clients/python`의 **astra-ai-sdk**(PyPI 배포용)은 `LocalRunner`로 배포 아티팩트를
+- `clients/python`의 **astra-ai-sdk**(PyPI 배포용)은 `AstraRunner`로 배포 아티팩트를
   내려받아 로컬 서빙하면서 텔레메트리(지연 분해·시스템 스냅샷·입출력 분포 윈도우)를
   `/api/v1/telemetry`로 전송합니다 — Telemetry 탭의 SDK clients/breakdown/output
   패널과 prediction/input drift 알림이 이 데이터로 동작합니다.

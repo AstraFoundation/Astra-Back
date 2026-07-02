@@ -1,4 +1,4 @@
-// Tensor construction + output helpers. numpy-free analogue of LocalRunner's
+// Tensor construction + output helpers. numpy-free analogue of AstraRunner's
 // _prepare/_batch_of/_signature in the Python SDK.
 
 import type { OrtModule, OrtTensor } from "./ort.js";

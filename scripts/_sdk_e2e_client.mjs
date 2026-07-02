@@ -1,6 +1,6 @@
 // SDK e2e (Node) — runs with the TARBALL-INSTALLED astra-ai-sdk from a /tmp project.
 //
-// Pulls the deployed artifact, serves it locally with LocalRunner, fires normal
+// Pulls the deployed artifact, serves it locally with AstraRunner, fires normal
 // traffic then distribution-shifted traffic, and flushes telemetry. No repo
 // imports — only the installed package + onnxruntime-node. Mirrors the Python
 // _sdk_e2e_client.py so the shared _sdk_e2e_assert.py works unchanged.
@@ -11,7 +11,7 @@ import { parseArgs } from "node:util";
 const { values } = parseArgs({ options: { handoff: { type: "string" } } });
 const h = JSON.parse(readFileSync(values.handoff, "utf8"));
 
-const { LocalRunner } = await import("astra-ai-sdk");
+const { AstraRunner } = await import("astra-ai-sdk");
 
 // Prove we imported the INSTALLED tarball, not the repo source.
 const resolved = import.meta.resolve("astra-ai-sdk");
@@ -20,7 +20,7 @@ if (!resolved.includes("/node_modules/astra-ai-sdk/")) {
 }
 console.log(`   using ${resolved}`);
 
-const runner = await LocalRunner.fromDeployment({
+const runner = await AstraRunner.fromDeployment({
   baseUrl: h.baseUrl,
   deploymentId: h.deploymentId,
   apiKey: h.apiKey,

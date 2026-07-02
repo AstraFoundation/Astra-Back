@@ -1,8 +1,8 @@
-"""LocalRunner — serve a Astra-deployed artifact on your own hardware.
+"""AstraRunner — serve a Astra-deployed artifact on your own hardware.
 
-    from astra_sdk import LocalRunner
+    from astra_sdk import AstraRunner
 
-    runner = LocalRunner.from_deployment(
+    runner = AstraRunner.from_deployment(
         base_url="https://app.example.com",
         deployment_id="dep_ab12cd34ef",
         api_key="astra_sk_live_…",
@@ -13,7 +13,7 @@
 The artifact is pulled once via the API-key-authed
 GET /api/v1/artifacts/{deployment_id} and cached on disk keyed by its sha256,
 so restarts don't re-download. Every run() is measured (pre/infer/post) and
-shipped to the Astra dashboard by the background TelemetryReporter, together
+shipped to the Astra dashboard by the background AstraTelemetryReporter, together
 with periodic system snapshots and windowed input/output stats — the same
 closed loop hosted serving gets, but on your hardware.
 
@@ -28,12 +28,12 @@ from pathlib import Path
 from typing import Any
 
 from ._http import HttpSession, resolve_base_url
-from .telemetry import TelemetryReporter
+from .telemetry import AstraTelemetryReporter
 
 _DEFAULT_CACHE = "~/.cache/astra"
 
 
-class RunnerError(Exception):
+class AstraRunnerError(Exception):
     pass
 
 
@@ -42,21 +42,21 @@ def _require_serve_extra():
         import numpy
         import onnxruntime
     except ImportError as exc:  # pragma: no cover - exercised only without extra
-        raise RunnerError(
+        raise AstraRunnerError(
             "Local serving needs onnxruntime + numpy — install the extra: "
             "pip install 'astra-ai-sdk[serve]'"
         ) from exc
     return numpy, onnxruntime
 
 
-class LocalRunner:
+class AstraRunner:
     """Local ONNX serving with built-in telemetry."""
 
     def __init__(
         self,
         model_path: str,
         *,
-        reporter: TelemetryReporter | None = None,
+        reporter: AstraTelemetryReporter | None = None,
         providers: list[str] | None = None,
     ) -> None:
         np, ort = _require_serve_extra()
@@ -92,7 +92,7 @@ class LocalRunner:
         report_telemetry: bool = True,
         providers: list[str] | None = None,
         timeout: float = 60.0,
-    ) -> "LocalRunner":
+    ) -> "AstraRunner":
         """Pull (or reuse) the deployed artifact and build a runner for it.
 
         base_url defaults to the hosted Astra origin (override with the
@@ -108,10 +108,10 @@ class LocalRunner:
         # Build the session first so the reporter can record the provider ORT
         # actually selected — not just the first one available on the box.
         runner = cls(str(path), providers=providers)
-        runner._reporter = TelemetryReporter(
+        runner._reporter = AstraTelemetryReporter(
             base, deployment_id, api_key,
             sdk_version=__version__, enabled=report_telemetry,
-            active_provider=runner.active_provider,
+            active_provider=runner.active_provider, cache_dir=cache_dir,
         )
         return runner
 
@@ -125,7 +125,7 @@ class LocalRunner:
         deployment_id: str | None = None,
         api_key: str | None = None,
         base_url: str | None = None,
-    ) -> "LocalRunner":
+    ) -> "AstraRunner":
         """Serve a model file you ALREADY have on disk — e.g. the one from the
         SDK Hub "Download Artifact" button. No deployment / network needed.
         Telemetry is OFF unless you also pass deployment_id + api_key (then local
@@ -136,7 +136,7 @@ class LocalRunner:
         if want and deployment_id and api_key:
             from . import __version__
 
-            runner._reporter = TelemetryReporter(
+            runner._reporter = AstraTelemetryReporter(
                 resolve_base_url(base_url), deployment_id, api_key,
                 sdk_version=__version__, enabled=True,
                 active_provider=runner.active_provider,
@@ -237,7 +237,7 @@ class LocalRunner:
         if self._reporter is not None:
             self._reporter.close()
 
-    def __enter__(self) -> "LocalRunner":
+    def __enter__(self) -> "AstraRunner":
         return self
 
     def __exit__(self, *_exc: object) -> None:

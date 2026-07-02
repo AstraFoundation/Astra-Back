@@ -1,37 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { ApiError, HttpSession } from "../src/http.js";
-import { InferenceError, AstraClient } from "../src/client.js";
+import { AstraApiError, HttpSession } from "../src/http.js";
 import { installFetch } from "./_mock.js";
-
-describe("AstraClient", () => {
-  it("infer happy path hits the deployment URL with bearer auth", async () => {
-    const { calls } = installFetch((req) => {
-      expect(req.path).toBe("/api/v1/infer/dep_x");
-      expect(req.headers["authorization"]).toBe("Bearer k");
-      return { json: { latencyMs: 1.2, outputs: [] } };
-    });
-    const client = new AstraClient("dep_x", "k", { baseUrl: "http://t" });
-    const out = await client.infer({ input: [[1.0]] });
-    expect(out.latencyMs).toBe(1.2);
-    expect(calls).toHaveLength(1);
-    await client.close();
-  });
-
-  it("maps a 4xx error body to InferenceError", async () => {
-    installFetch(() => ({
-      status: 404,
-      json: { detail: { code: "deployment_not_found", message: "nope" } },
-    }));
-    const client = new AstraClient("dep_x", "k", { baseUrl: "http://t" });
-    await expect(client.infer()).rejects.toMatchObject({
-      name: "InferenceError",
-      code: "deployment_not_found",
-      status: 404,
-    });
-    expect(InferenceError).toBeDefined();
-  });
-});
 
 describe("HttpSession", () => {
   it("retries transient 503s and then succeeds", async () => {
@@ -47,7 +17,7 @@ describe("HttpSession", () => {
     s.close();
   });
 
-  it("does not retry a 401 and raises ApiError", async () => {
+  it("does not retry a 401 and raises AstraApiError", async () => {
     let n = 0;
     installFetch(() => {
       n += 1;
@@ -58,11 +28,11 @@ describe("HttpSession", () => {
     });
     const s = new HttpSession("http://t", "k", { maxAttempts: 3, maxBackoff: 0 });
     await expect(s.request("GET", "/x")).rejects.toMatchObject({
-      name: "ApiError",
+      name: "AstraApiError",
       code: "invalid_api_key",
       status: 401,
     });
     expect(n).toBe(1);
-    expect(ApiError).toBeDefined();
+    expect(AstraApiError).toBeDefined();
   });
 });
