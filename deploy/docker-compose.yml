@@ -139,6 +139,11 @@ services:
       ASTRA_COOKIE_SAMESITE: ${ASTRA_COOKIE_SAMESITE:-lax}
       # Synthetic dashboard traffic — off in production; flip to 1 only to demo.
       ASTRA_TELEMETRY_SIM_ENABLED: ${ASTRA_TELEMETRY_SIM_ENABLED:-0}
+      # The drift monitor + retention purge run from the WORKER's arq cron in
+      # this stack. Default OFF here so the API doesn't run a second copy every
+      # minute (duplicate purges, and the alert cooldown's read-then-insert
+      # races into duplicate alerts). Only flip to 1 for a worker-less deploy.
+      ASTRA_MONITOR_INLINE_ENABLED: ${ASTRA_MONITOR_INLINE_ENABLED:-0}
       ASTRA_GOOGLE_CLIENT_ID: ${ASTRA_GOOGLE_CLIENT_ID:-}
       ASTRA_GOOGLE_CLIENT_SECRET: ${ASTRA_GOOGLE_CLIENT_SECRET:-}
       # Empty by default so the callback derives from ASTRA_PUBLIC_ORIGIN
@@ -180,6 +185,11 @@ services:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
       minio-init: { condition: service_completed_successfully }
+      # Only the API runs `alembic upgrade head`; on Postgres the worker cannot
+      # create the schema itself, so gate it on the API being healthy — its
+      # startup reconcile/cron would otherwise race a first-boot migration and
+      # fire against tables that don't exist yet.
+      api: { condition: service_healthy }
 
   # Owner-only PRODUCT analytics (signups, active users, retention) via a
   # self-hosted Umami — kept OUT of the app so we don't build analytics into the

@@ -44,7 +44,7 @@ The API is then reachable at **http://localhost:8000** (override with
 `ASTRA_API_PORT`). Smoke-test:
 
 ```bash
-curl -fsS http://localhost:8000/healthz   # {"status":"ok"}
+curl -fsS http://localhost:8000/healthz   # {"ok":true,"fastPipeline":false}
 curl -fsS http://localhost:8000/readyz    # checks DB / Redis / S3
 ```
 
