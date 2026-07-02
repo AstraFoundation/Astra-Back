@@ -112,15 +112,19 @@ class DeploymentRow(SQLModel, table=True):
     __tablename__ = "deployments"
 
     pk: int | None = Field(default=None, primary_key=True)
-    # Stable business id (dep_<token>) — used in the inference URL and to link
-    # api_keys / inference_events. `pk` stays the auto-increment surrogate.
+    # Stable business id (dep_<token>) — what AstraRunner.from_deployment() takes,
+    # and the key that links api_keys / inference_events. `pk` stays the
+    # auto-increment surrogate.
     id: str = Field(default="", index=True)
     user_id: str = Field(default="", index=True)
     model_id: str = Field(default="", index=True)
     name: str = ""
-    # User-editable note describing what this endpoint is for (which server,
+    # User-editable note describing what this deployment is for (which host,
     # which environment, …). Free text, empty when unset.
     description: str = ""
+    # Artifact pull URL the SDK fetches (GET /api/v1/artifacts/<id>). Frozen at
+    # creation; legacy rows may hold the removed /api/v1/infer path — no longer
+    # displayed (the UI shows the deployment id), scrubbed by migration 0011.
     endpoint: str
     region: str
     # Live metrics — maintained by the drift monitor from a rolling window of

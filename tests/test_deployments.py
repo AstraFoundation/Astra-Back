@@ -29,7 +29,9 @@ def test_deploy_mints_endpoint_and_key(make_live_model, deploy_model, client):
     listed = client.get(f"/api/models/{mid}/deployments").json()
     assert any(d["id"] == dep["id"] for d in listed)
     tele = client.get(f"/api/models/{mid}/telemetry/deployments").json()
-    assert any(d["endpoint"] == dep["endpoint"] for d in tele)
+    # The telemetry widget identifies deployments by id now (on-device: there is
+    # no hosted inference endpoint to show).
+    assert any(d["id"] == dep["id"] for d in tele)
 
 
 def test_pause_resume_and_rotate(make_live_model, deploy_model, client):

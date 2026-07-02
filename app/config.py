@@ -85,13 +85,11 @@ class Settings(BaseSettings):
     rate_limit_upload: str = "20/minute"
     rate_limit_import: str = "60/minute"
     rate_limit_auth: str = "30/minute"
-    # Served inference is high-volume by design (a deployed model under load) —
-    # generous so the traffic simulator and real bursts aren't throttled.
-    rate_limit_infer: str = "1200/minute"
 
-    # --- real inference serving + live telemetry ---
-    inference_cache_size: int = 8         # warm ORT sessions kept in the LRU
-    max_infer_batch: int = 64             # cap on synthesized batch size
+    # --- live telemetry / drift monitor ---
+    # (Server-side inference was removed in SDK 0.3.0 — the SDK runs models
+    # on-device — so the old rate_limit_infer / inference_cache_size /
+    # max_infer_batch knobs are gone. Only telemetry ingestion + drift remain.)
     # Drift monitor: rolling window + thresholds (README closed-loop policy).
     monitor_interval_sec: int = 60        # how often the monitor pass runs
     monitor_window_min: int = 10          # rolling window for live deployment metrics

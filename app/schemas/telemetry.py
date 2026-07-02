@@ -48,7 +48,7 @@ class Percentiles(BaseModel):
 
 
 class Deployment(BaseModel):
-    endpoint: str
+    id: str                 # deployment id (e.g. dep_ab12cd34ef) — what AstraRunner.from_deployment() takes
     region: str
     qps: float
     p95: float

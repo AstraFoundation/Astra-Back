@@ -156,7 +156,7 @@ def deployments(
     ).all()
     return [
         Deployment(
-            endpoint=d.endpoint, region=d.region, qps=d.qps, p95=d.p95,
+            id=d.id, region=d.region, qps=d.qps, p95=d.p95,
             errorsPct=d.errors_pct, status=d.status,  # type: ignore[arg-type]
         )
         for d in rows
