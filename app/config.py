@@ -106,11 +106,24 @@ class Settings(BaseSettings):
     # have no arq cron); scaled deploys with a worker may turn this off and
     # rely on the worker's cron instead.
     monitor_inline_enabled: bool = True
+    # SSE dashboard refresh cadence. Each tick runs a DB round-trip per open tab;
+    # 4s hammered the worker, so default to a calmer interval (still "live" enough).
+    stream_interval_sec: int = 8
     # Client-telemetry (SDK) ingestion + drift thresholds on SDK-shipped stats.
     rate_limit_telemetry: str = "600/minute"
+    rate_limit_artifact: str = "60/minute"  # artifact pulls (heavier; per-deployment)
     telemetry_batch_max: int = 500         # max items per /telemetry batch POST
+    telemetry_body_max_mb: int = 8         # hard cap on the telemetry batch body (OOM guard)
     drift_psi: float = 0.2                 # prediction-drift PSI warning level
     drift_input_z: float = 3.0             # input-mean shift alert (z-score)
+
+    # --- telemetry retention (unbounded fact tables → disk-fill outage) ---------
+    # A periodic purge (run from the drift-monitor tick) deletes rows older than
+    # these horizons so the primary Postgres volume can't grow without bound.
+    retention_enabled: bool = True
+    telemetry_retention_days: int = 90     # inference_events / snapshots / window_stats
+    processed_batch_retention_days: int = 35  # idempotency ledger (> 30d spool horizon)
+    activity_retention_days: int = 180     # activity_events / alerts
 
     # --- observability ---
     log_level: str = "INFO"
@@ -206,9 +219,30 @@ class Settings(BaseSettings):
         """Fail-fast checks at startup. Returns a list of warnings (non-fatal);
         raises ValueError on misconfiguration that would break the app."""
         warnings: list[str] = []
-        if self.jwt_secret == "dev-insecure-change-me":
+        # A JWT secret is unsafe if it's a known placeholder or too short to
+        # resist offline brute force. The guard used to only match the code
+        # default and only warn — so the compose fallback ("change-me-in-production")
+        # and the .env.example placeholder both slipped through and booted with a
+        # repo-public HS256 key. Now: warn in dev (SQLite), FAIL CLOSED in a
+        # production-like deploy (Postgres) so a missing/placeholder secret aborts
+        # startup instead of silently signing forgeable session cookies.
+        _KNOWN_WEAK = {
+            "dev-insecure-change-me",
+            "change-me-in-production",
+            "change-me-please-openssl-rand-hex-32",
+        }
+        jwt_weak = self.jwt_secret in _KNOWN_WEAK or len(self.jwt_secret) < 32
+        is_prod_like = not self.is_sqlite  # prod hard-wires Postgres; dev/test = SQLite
+        if jwt_weak and is_prod_like:
+            raise ValueError(
+                "ASTRA_JWT_SECRET is a placeholder or too short (<32 chars) in a "
+                "production deploy — refusing to boot with a forgeable session key. "
+                "Set a strong secret: openssl rand -hex 32"
+            )
+        if jwt_weak:
             warnings.append(
-                "ASTRA_JWT_SECRET is the insecure default — set a strong secret in production."
+                "ASTRA_JWT_SECRET is an insecure placeholder/short value — set a "
+                "strong secret (openssl rand -hex 32) before deploying."
             )
         if bool(self.google_client_id) != bool(self.google_client_secret):
             warnings.append(

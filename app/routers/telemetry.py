@@ -137,8 +137,8 @@ def meta(
         "reason": reason,
         "deployments": len(deps),
         "liveDeployments": sum(1 for d in deps if d.status != "paused"),
-        # Honest labeling of where live data comes from: hosted /v1/infer
-        # ("server") vs astra-ai-sdk local serving ("client").
+        # All live data is on-device SDK ("client") telemetry — Astra never runs
+        # the model server-side. Kept as a map for schema stability.
         "sources": source_counts(session, model_id),
         "lastSnapshotAt": snap_ts,
     }
@@ -238,6 +238,7 @@ def clients(
             "gpuName": runtime.get("gpuName", ""),
             "gpuMemTotalMb": runtime.get("gpuMemTotalMb", 0.0),
             "cudaVersion": runtime.get("cudaVersion", ""),
+            "driverVersion": runtime.get("driverVersion", ""),
             "gpuUtilPct": r.gpu_util_pct,
             "gpuMemUsedMb": r.gpu_mem_used_mb,
             "gpuTempC": r.gpu_temp_c,
@@ -481,15 +482,25 @@ async def stream(
         if get_model(s, model_id, user_id) is None:
             raise HTTPException(status_code=404, detail="model not found")
 
+    def _tick() -> dict | None:
+        """Blocking DB work — run OFF the event loop so many open dashboards don't
+        serialize the single async thread on a sync round-trip every few seconds."""
+        with open_session() as s:
+            if get_model(s, model_id, user_id) is None:
+                return None
+            return _stream_snapshot(s, model_id)
+
     async def event_source():
+        from fastapi.concurrency import run_in_threadpool
+
+        interval = max(4, get_settings().stream_interval_sec)
         while True:
             if await request.is_disconnected():
                 return
-            with open_session() as s:
-                if get_model(s, model_id, user_id) is None:
-                    return
-                payload = _stream_snapshot(s, model_id)
+            payload = await run_in_threadpool(_tick)
+            if payload is None:
+                return
             yield {"event": "snapshot", "data": json.dumps(payload)}
-            await asyncio.sleep(4.0)
+            await asyncio.sleep(interval)
 
     return EventSourceResponse(event_source())

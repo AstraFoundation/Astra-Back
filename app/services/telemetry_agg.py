@@ -76,20 +76,31 @@ def has_any_events(session: Session, model_id: str) -> bool:
     ).first() is not None
 
 
+# Memory guard: cap how many raw events one aggregation pulls into Python. Above
+# this the newest N are used (a bounded sample) instead of scanning a whole M-row
+# window into RAM per dashboard load. Normal windows are far below the cap, so this
+# never changes their results; the proper long-term fix is SQL-side aggregation.
+_MAX_EVENTS = 200_000
+
+
 def _fetch_events(
     session: Session, model_id: str, start: datetime, end: datetime,
 ) -> list[tuple[datetime, float, bool]]:
+    # Select only the 3 columns used (not whole rows), newest-first with a cap.
     rows = session.exec(
-        select(InferenceEventRow).where(
+        select(InferenceEventRow.ts, InferenceEventRow.latency_ms, InferenceEventRow.success)
+        .where(
             InferenceEventRow.model_id == model_id,
             InferenceEventRow.ts >= iso(start),
             InferenceEventRow.ts < iso(end),
         )
+        .order_by(InferenceEventRow.ts.desc())  # type: ignore[attr-defined]
+        .limit(_MAX_EVENTS)
     ).all()
     out: list[tuple[datetime, float, bool]] = []
-    for r in rows:
+    for ts, latency_ms, success in rows:
         try:
-            out.append((_parse(r.ts), r.latency_ms, r.success))
+            out.append((_parse(ts), latency_ms, success))
         except ValueError:
             continue
     out.sort(key=lambda e: e[0])

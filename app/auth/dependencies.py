@@ -18,10 +18,18 @@ _UNAUTH = HTTPException(
 
 
 def _user_from_token(session: Session, token: str | None) -> UserRow | None:
-    user_id = decode_access_token(token or "")
-    if not user_id:
+    decoded = decode_access_token(token or "")
+    if not decoded:
         return None
-    return session.get(UserRow, user_id)
+    user_id, tv = decoded
+    user = session.get(UserRow, user_id)
+    if user is None:
+        return None
+    # Reject a token whose revocation epoch predates the user's current one
+    # (password change / "log out everywhere" bumps token_version).
+    if user.token_version != tv:
+        return None
+    return user
 
 
 def get_current_user(

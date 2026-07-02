@@ -21,10 +21,37 @@
 # orphans).
 name: astra-backend
 
+# Env the WORKER legitimately needs: DB, Redis (arq broker), object storage, and
+# the compression-pipeline knobs. Deliberately EXCLUDES the JWT secret, OAuth
+# secrets, the GitHub PAT and cookie/CORS/origin config — the worker deserializes
+# uploaded models, so it must not carry API-only long-lived secrets an exploit
+# could exfiltrate. The API merges this and adds its own secrets on top.
+x-shared-env: &shared_env
+  ASTRA_DATABASE_URL: postgresql://${POSTGRES_USER:-astra}:${POSTGRES_PASSWORD:-astra}@postgres:5432/${POSTGRES_DB:-astra}
+  ASTRA_REDIS_URL: redis://redis:6379/0
+  ASTRA_STORAGE_BACKEND: s3
+  ASTRA_S3_ENDPOINT_URL: http://minio:9000
+  ASTRA_S3_BUCKET: ${ASTRA_S3_BUCKET:-astra-artifacts}
+  ASTRA_S3_ACCESS_KEY: ${MINIO_ROOT_USER:-astraadmin}
+  ASTRA_S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-astrasecret}
+  ASTRA_S3_FORCE_PATH_STYLE: "1"
+  ASTRA_FAST_PIPELINE: ${ASTRA_FAST_PIPELINE:-0}
+  ASTRA_PARETO_TRIALS: ${ASTRA_PARETO_TRIALS:-150}
+  ASTRA_PARETO_ADAPTIVE: ${ASTRA_PARETO_ADAPTIVE:-1}
+  ASTRA_INLINE_JOBS: "0"
+  ASTRA_LOG_JSON: "1"
+
+# Common container hardening: drop all Linux capabilities and block privilege
+# escalation. Neither the API nor the worker needs any capability.
+x-hardening: &hardening
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+
 services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    mem_limit: ${ASTRA_PG_MEM:-1g}
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-astra}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-astra}
@@ -40,7 +67,8 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    mem_limit: ${ASTRA_REDIS_MEM:-512m}
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "384mb", "--maxmemory-policy", "allkeys-lru"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -48,8 +76,12 @@ services:
       retries: 20
 
   minio:
-    image: minio/minio:latest
+    # PINNED (was :latest). A `docker compose pull` must not silently upgrade the
+    # live artifact store to a backward-incompatible MinIO. Overridable via env so
+    # you can bump deliberately; VERIFY the tag exists in your registry before pull.
+    image: minio/minio:${MINIO_TAG:-RELEASE.2025-04-22T22-12-26Z}
     restart: unless-stopped
+    mem_limit: ${ASTRA_MINIO_MEM:-1g}
     command: ["server", "/data", "--console-address", ":9001"]
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-astraadmin}
@@ -59,7 +91,7 @@ services:
 
   # One-shot: wait for MinIO, then create the artifacts bucket. Gates the app.
   minio-init:
-    image: minio/mc:latest
+    image: minio/mc:${MINIO_MC_TAG:-RELEASE.2025-04-16T18-13-26Z}
     depends_on:
       - minio
     entrypoint: >
@@ -80,7 +112,7 @@ services:
     # from the frontend's Caddy / Cloudflare Tunnel — the real client IP reaches
     # the rate limiter and access logs instead of the proxy's address. Safe here
     # because the API is bound to a private network, not the public internet.
-    command: ["sh", "-c", "python -m alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips='*'"]
+    command: ["sh", "-c", "python -m alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips=${ASTRA_FORWARDED_ALLOW_IPS:-127.0.0.1}"]
     # Publish the API so the separately-deployed frontend (its Caddy) and any
     # direct SDK clients can reach it. ASTRA_API_BIND defaults to 127.0.0.1 so a
     # single-box dev run isn't exposed; set it to 0.0.0.0 (or a specific host IP)
@@ -88,21 +120,22 @@ services:
     # network behind TLS rather than a public 0.0.0.0 bind.
     ports:
       - "${ASTRA_API_BIND:-127.0.0.1}:${ASTRA_API_PORT:-8000}:8000"
-    environment: &backend_env
-      ASTRA_DATABASE_URL: postgresql://${POSTGRES_USER:-astra}:${POSTGRES_PASSWORD:-astra}@postgres:5432/${POSTGRES_DB:-astra}
-      ASTRA_REDIS_URL: redis://redis:6379/0
-      ASTRA_STORAGE_BACKEND: s3
-      ASTRA_S3_ENDPOINT_URL: http://minio:9000
-      ASTRA_S3_BUCKET: ${ASTRA_S3_BUCKET:-astra-artifacts}
-      ASTRA_S3_ACCESS_KEY: ${MINIO_ROOT_USER:-astraadmin}
-      ASTRA_S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-astrasecret}
-      ASTRA_S3_FORCE_PATH_STYLE: "1"
-      ASTRA_JWT_SECRET: ${ASTRA_JWT_SECRET:-change-me-in-production}
+    <<: *hardening
+    mem_limit: ${ASTRA_API_MEM:-2g}
+    pids_limit: 512
+    environment:
+      # Shared infra env (DB/Redis/S3/pipeline) + API-only secrets on top.
+      <<: *shared_env
+      # FAIL CLOSED: `:?` makes compose abort if ASTRA_JWT_SECRET is unset instead
+      # of falling back to a repo-public constant that signs forgeable sessions.
+      ASTRA_JWT_SECRET: ${ASTRA_JWT_SECRET:?ASTRA_JWT_SECRET must be set — openssl rand -hex 32}
       # The public origin browsers use to reach the PRODUCT (the frontend's
       # Caddy). Drives CORS and the base URLs rendered in SDK snippets.
       ASTRA_PUBLIC_ORIGIN: ${ASTRA_PUBLIC_ORIGIN:-http://localhost:8080}
       ASTRA_CORS_ORIGINS: ${ASTRA_PUBLIC_ORIGIN:-http://localhost:8080}
-      ASTRA_COOKIE_SECURE: ${ASTRA_COOKIE_SECURE:-0}
+      # Default SECURE now (was 0). Behind the Cloudflare/HTTPS edge this must be 1;
+      # override to 0 only for a plain-HTTP single-box dev run.
+      ASTRA_COOKIE_SECURE: ${ASTRA_COOKIE_SECURE:-1}
       ASTRA_COOKIE_SAMESITE: ${ASTRA_COOKIE_SAMESITE:-lax}
       # Synthetic dashboard traffic — off in production; flip to 1 only to demo.
       ASTRA_TELEMETRY_SIM_ENABLED: ${ASTRA_TELEMETRY_SIM_ENABLED:-0}
@@ -116,13 +149,6 @@ services:
       # from deploy/.env (gitignored); unset → feedback is stored in the DB only.
       ASTRA_FEEDBACK_GITHUB_TOKEN: ${ASTRA_FEEDBACK_GITHUB_TOKEN:-}
       ASTRA_FEEDBACK_GITHUB_REPO: ${ASTRA_FEEDBACK_GITHUB_REPO:-}
-      ASTRA_FAST_PIPELINE: ${ASTRA_FAST_PIPELINE:-0}
-      ASTRA_PARETO_TRIALS: ${ASTRA_PARETO_TRIALS:-150}
-      # 1 = adaptive D-scaled budget: per-model trials = clamp(10·D+10, 30,
-      # PARETO_TRIALS), i.e. DYNAMIC, not a static PARETO_TRIALS count. 0 = fixed.
-      ASTRA_PARETO_ADAPTIVE: ${ASTRA_PARETO_ADAPTIVE:-1}
-      ASTRA_INLINE_JOBS: "0"
-      ASTRA_LOG_JSON: "1"
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
@@ -142,7 +168,14 @@ services:
       context: ..
       dockerfile: Dockerfile
     command: ["python", "worker.py"]
-    environment: *backend_env
+    <<: *hardening
+    # The worker deserializes uploaded models — give it its OWN resource envelope
+    # (isolated from the stateful services) so a heavy/malicious upload can't OOM
+    # the whole VM, and only the minimal infra env (no JWT/OAuth/PAT secrets).
+    mem_limit: ${ASTRA_WORKER_MEM:-4g}
+    pids_limit: 512
+    environment:
+      <<: *shared_env
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
@@ -174,13 +207,18 @@ services:
         -c "CREATE DATABASE umami"
 
   umami:
-    image: docker.umami.is/umami-software/umami:postgresql-latest
+    # PINNED (was postgresql-latest). Overridable; verify the tag before pull.
+    image: docker.umami.is/umami-software/umami:${UMAMI_TAG:-postgresql-v2.14.0}
     restart: unless-stopped
+    mem_limit: ${ASTRA_UMAMI_MEM:-512m}
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-astra}:${POSTGRES_PASSWORD:-astra}@postgres:5432/umami
       DATABASE_TYPE: postgresql
-      # Signs Umami's own auth tokens — set a strong random value in .env.
-      APP_SECRET: ${UMAMI_APP_SECRET:-change-me-umami-secret}
+      # FAIL CLOSED: this public analytics dashboard's session tokens are signed
+      # with APP_SECRET — `:?` aborts startup if unset instead of using the
+      # repo-public default that makes tokens forgeable. Also CHANGE the default
+      # admin/umami login on first sign-in (put Cloudflare Access in front too).
+      APP_SECRET: ${UMAMI_APP_SECRET:?UMAMI_APP_SECRET must be set — openssl rand -hex 32}
     # Published like the API (ASTRA_API_BIND): 127.0.0.1 for single-box dev, or
     # UMAMI_BIND=0.0.0.0 so the frontend's Caddy / tunnel on another host reaches
     # it at <this-host>:3001 — then set UMAMI_UPSTREAM=http://<this-host>:3001 on

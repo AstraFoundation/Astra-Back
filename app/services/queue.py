@@ -120,12 +120,18 @@ async def run_pipeline_task(ctx: dict, **payload) -> None:
 
 
 def run_monitor_once() -> dict:
-    """One synchronous drift-monitor pass (shared by the arq cron + inline loop)."""
+    """One synchronous drift-monitor pass (shared by the arq cron + inline loop).
+    Also runs the telemetry retention purge so the fact tables stay bounded."""
     from app.db import open_session
     from app.services.drift_monitor import drift_monitor_pass
+    from app.services.retention import purge_expired
 
     with open_session() as session:
-        return drift_monitor_pass(session)
+        result = drift_monitor_pass(session)
+    # Separate session so a purge issue can't roll back the monitor's writes.
+    with open_session() as session:
+        purge_expired(session)
+    return result
 
 
 async def run_drift_monitor(ctx: dict) -> None:

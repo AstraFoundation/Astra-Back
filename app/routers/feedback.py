@@ -133,11 +133,11 @@ def feedback_attachment(
     current_user: CurrentUser,
     session: Session = Depends(get_session),
 ) -> StreamingResponse:
-    """Serve a feedback screenshot. Session-gated (the whole router is) — any
-    signed-in user can fetch by id; this is an internal triage affordance, not a
-    per-user resource."""
+    """Serve a feedback screenshot. Scoped to the OWNER: a signed-in user can only
+    fetch their own feedback's attachment. (Previously any authenticated user could
+    read any feedback screenshot by guessing/learning its id — a cross-tenant read.)"""
     row = session.get(FeedbackRow, feedback_id)
-    if row is None or not row.attachment_key:
+    if row is None or not row.attachment_key or row.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="no attachment for this feedback")
     try:
         stream, size = get_storage().open_stream(row.attachment_key)

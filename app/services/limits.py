@@ -30,6 +30,10 @@ limiter = Limiter(
     # headers_enabled requires a `response` param on every decorated endpoint;
     # we don't inject limit headers, the 429 fires before the handler runs.
     headers_enabled=False,
+    # Fail OPEN on a storage (Redis) error: a transient Redis blip must never
+    # turn every login / signup / upload / telemetry POST into a 500. slowapi
+    # then logs the error and lets the request through instead of propagating it.
+    swallow_errors=True,
 )
 
 

@@ -249,9 +249,22 @@ def _on_success(
     # key on the model so the download endpoints can stream it back.
     artifact_path = getattr(artifacts, "artifact_path", None)
     new_artifact_key: str | None = None
+    new_artifact_sha: str | None = None
+    new_artifact_size: int | None = None
     if artifact_path:
         suffix = Path(artifact_path).suffix
         new_artifact_key = make_artifact_key(job.model_id, suffix)
+        # Hash + size the LOCAL file once (before upload) so the SDK /artifacts
+        # endpoints can serve the ETag/size from metadata instead of re-reading
+        # and re-hashing the whole object on every pull/304.
+        import hashlib
+
+        _h = hashlib.sha256()
+        with open(artifact_path, "rb") as _fh:
+            for _chunk in iter(lambda: _fh.read(1024 * 1024), b""):
+                _h.update(_chunk)
+        new_artifact_sha = _h.hexdigest()
+        new_artifact_size = Path(artifact_path).stat().st_size
         get_storage().upload_file(artifact_path, new_artifact_key)
 
     # Persist the post-ingestion ONNX — the source graph that per-trial Pareto
@@ -315,6 +328,8 @@ def _on_success(
             # Record the artifact key regardless of the status guard so
             # downloads work even if /complete finalized the model first.
             model.artifact_key = new_artifact_key
+            model.artifact_sha256 = new_artifact_sha
+            model.artifact_size_bytes = new_artifact_size
             s.add(model)
         if model and model.status in ("analyzing", "optimizing"):
             # The worker is the single source of truth for finishing the

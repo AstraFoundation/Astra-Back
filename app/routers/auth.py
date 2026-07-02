@@ -108,7 +108,7 @@ def signup(
     )
     session.add(user)
     session.commit()
-    set_session_cookie(response, create_access_token(user.id))
+    set_session_cookie(response, create_access_token(user.id, user.token_version))
     return _me(user)
 
 
@@ -125,7 +125,7 @@ def login(
     # Same message for unknown email and wrong password — no user enumeration.
     if user is None or not verify_password(body.password, user.password_hash):
         raise _err(401, "invalid_credentials", "Incorrect email or password.")
-    set_session_cookie(response, create_access_token(user.id))
+    set_session_cookie(response, create_access_token(user.id, user.token_version))
     return _me(user)
 
 
@@ -159,14 +159,20 @@ def change_password(
     request: Request,
     body: ChangePasswordRequest,
     current_user: CurrentUser,
+    response: Response,
     session: Session = Depends(get_session),
 ) -> OkResponse:
     if not verify_password(body.currentPassword, current_user.password_hash):
         raise _err(400, "invalid_credentials", "Current password is incorrect.")
     _check_password(body.newPassword)
     current_user.password_hash = hash_password(body.newPassword)
+    # Bump the revocation epoch so EVERY outstanding session token is invalidated
+    # (an attacker holding a stolen token is evicted), then re-issue a fresh cookie
+    # for THIS session so the user who just changed their password stays signed in.
+    current_user.token_version += 1
     session.add(current_user)
     session.commit()
+    set_session_cookie(response, create_access_token(current_user.id, current_user.token_version))
     return OkResponse()
 
 
@@ -269,7 +275,7 @@ def google_callback(
     user = _provision_google_user(session, claims)
 
     resp = RedirectResponse(get_settings().post_login_path, status_code=302)
-    set_session_cookie(resp, create_access_token(user.id))
+    set_session_cookie(resp, create_access_token(user.id, user.token_version))
     resp.delete_cookie(
         OAUTH_STATE_COOKIE, path="/",
         samesite=get_settings().cookie_samesite,  # type: ignore[arg-type]

@@ -44,19 +44,22 @@ def verify_password(password: str, hashed: str | None) -> bool:
 
 # ── JWT ──────────────────────────────────────────────────────────────────────
 
-def create_access_token(user_id: str) -> str:
+def create_access_token(user_id: str, token_version: int = 0) -> str:
     settings = get_settings()
     now = datetime.now(timezone.utc)
     payload = {
         "sub": user_id,
+        "tv": int(token_version),  # session-revocation epoch (see UserRow.token_version)
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(minutes=settings.jwt_ttl_min)).timestamp()),
     }
     return jwt.encode(payload, settings.jwt_secret, algorithm=_ALGO)
 
 
-def decode_access_token(token: str) -> str | None:
-    """Return the subject (user id) or None if the token is missing/invalid/expired."""
+def decode_access_token(token: str) -> tuple[str, int] | None:
+    """Return (user_id, token_version) or None if missing/invalid/expired. The
+    caller checks token_version against the user's current epoch so a token issued
+    before a password change / "log out everywhere" is rejected."""
     if not token:
         return None
     try:
@@ -64,7 +67,10 @@ def decode_access_token(token: str) -> str | None:
     except jwt.PyJWTError:
         return None
     sub = claims.get("sub")
-    return sub if isinstance(sub, str) else None
+    if not isinstance(sub, str):
+        return None
+    tv = claims.get("tv", 0)
+    return sub, int(tv) if isinstance(tv, int) else 0
 
 
 # ── cookie ───────────────────────────────────────────────────────────────────

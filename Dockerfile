@@ -43,6 +43,15 @@ RUN pip install \
 COPY . /app/
 RUN pip install ".[prod,engine]"
 
+# Run as a NON-ROOT user. The worker deserializes uploaded models
+# (torch/pickle/joblib in the vendored engine), so a deserialization exploit
+# must not land as uid 0. All pip installs above run as root; drop privileges
+# here, after the app is installed. The worker's scratch dir must be writable.
+RUN useradd --create-home --uid 10001 astra \
+    && mkdir -p /tmp/astra-work \
+    && chown -R astra:astra /app /tmp/astra-work
+USER astra
+
 EXPOSE 8000
 
 # Default to the API; the worker service overrides this in compose.

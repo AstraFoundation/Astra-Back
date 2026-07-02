@@ -19,6 +19,10 @@ class UserRow(SQLModel, table=True):
     role: str = "user"                            # user | admin (future)
     auth_provider: str = "password"               # password | google
     google_sub: str | None = Field(default=None, index=True)  # Google stable id
+    # Session-revocation epoch. Embedded as a JWT claim; a token whose `tv` != this
+    # is rejected. Bumped on password change and "log out everywhere" so a
+    # leaked/stolen 7-day token can actually be evicted.
+    token_version: int = 0
 
 
 class ModelRow(SQLModel, table=True):
@@ -43,6 +47,11 @@ class ModelRow(SQLModel, table=True):
     # Object-storage keys (set by the worker / upload handler). None until present.
     artifact_key: str | None = None   # compressed artifact key
     source_key: str | None = None     # user-uploaded source key
+    # Persisted artifact identity so the SDK-facing /artifacts endpoints serve the
+    # ETag/size from metadata instead of reading the whole object + re-hashing it
+    # on every call (incl. 304s). Set at pipeline completion; lazily backfilled.
+    artifact_sha256: str | None = None
+    artifact_size_bytes: int | None = None
 
 
 class RunRow(SQLModel, table=True):
@@ -126,7 +135,9 @@ class DeploymentRow(SQLModel, table=True):
 
 
 class InferenceEventRow(SQLModel, table=True):
-    """One real inference served through /api/v1/infer — the raw telemetry fact."""
+    """One on-device inference measured by the SDK — the raw telemetry fact.
+    Astra never runs the model server-side; these arrive via the SDK's
+    closed-loop telemetry batches (/api/v1/telemetry/{id}/batch)."""
 
     __tablename__ = "inference_events"
     __table_args__ = (
@@ -144,9 +155,10 @@ class InferenceEventRow(SQLModel, table=True):
     error_code: str | None = None             # set on a failed inference
     batch_size: int = 1
     region: str = ""
-    # Where the event was measured: "server" (hosted /v1/infer) or "client"
-    # (astra-ai-sdk serving the artifact locally and shipping telemetry batches).
-    source: str = Field(default="server", index=True)
+    # On-device SDK telemetry always tags "client". The column is retained (with a
+    # now-vestigial "server" value) for schema stability; there is no server-side
+    # inference path anymore.
+    source: str = Field(default="client", index=True)
     latency_pre_ms: float | None = None       # client-side input preparation
     latency_post_ms: float | None = None      # client-side output handling
     client_id: str | None = None              # stable random id per SDK process
@@ -160,6 +172,9 @@ class TelemetrySnapshotRow(SQLModel, table=True):
     __tablename__ = "telemetry_snapshots"
     __table_args__ = (
         Index("ix_snap_dep_ts", "deployment_id", "ts"),
+        # The hardware/resource dashboards + _client_hardware filter by model_id
+        # and order by ts; without this they scan the model's whole snapshot history.
+        Index("ix_snap_model_ts", "model_id", "ts"),
     )
 
     pk: int | None = Field(default=None, primary_key=True)
@@ -175,7 +190,7 @@ class TelemetrySnapshotRow(SQLModel, table=True):
     sdk_version: str = ""
     # {"python","ort","os","arch","provider","host", + hardware identity:
     #  "cpuModel","cpuCores","ramTotalMb","availableProviders","activeProvider",
-    #  "gpuName","gpuCount","gpuMemTotalMb","cudaVersion"}
+    #  "gpuName","gpuCount","gpuMemTotalMb","cudaVersion","driverVersion"}
     runtime_json: str = "{}"
     # Dynamic accelerator sample (NULL when the host has no NVIDIA GPU) — kept as
     # real columns (not in runtime_json) so the resource time-series query is cheap.
@@ -239,6 +254,24 @@ class TelemetryRollupRow(SQLModel, table=True):
     p50: float = 0.0
     p95: float = 0.0
     p99: float = 0.0
+
+
+class ProcessedBatchRow(SQLModel, table=True):
+    """Idempotency ledger for the SDK's closed-loop telemetry. The SDK gives each
+    durable-spool segment a stable `batchId`; recording it here (in the same
+    transaction as the batch's rows) lets a re-sent batch — after an offline
+    reconnect or a process restart — be recognised as a duplicate and acked
+    without double-inserting, so dashboard KPIs never inflate."""
+
+    __tablename__ = "processed_batches"
+
+    batch_id: str = Field(primary_key=True)
+    deployment_id: str = Field(default="", index=True)
+    received_at: str = ""             # ISO-8601 UTC
+    accepted_events: int = 0
+    accepted_snapshots: int = 0
+    accepted_windows: int = 0
+    dropped: int = 0
 
 
 class AlertRow(SQLModel, table=True):
