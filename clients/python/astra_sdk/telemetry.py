@@ -29,7 +29,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ._http import HttpSession
+from ._http import AstraApiError, HttpSession
 from .stats import WindowAggregator
 from .system import runtime_fingerprint, system_sample
 
@@ -42,7 +42,12 @@ def _env_float(name: str, default: float) -> float:
 
 
 _QUEUE_MAX = 10_000
-_BATCH_MAX = 450            # below the server's 500-item cap
+_BATCH_MAX = 450            # combined events+snapshots+windows — below the server cap
+# 4xx statuses that are still worth retrying later: auth may be fixed out of
+# band (401/403), a paused deployment can be resumed (409), and 408/429 are
+# transient by definition. Any OTHER 4xx means the server will never accept
+# this exact payload — retrying it forever would head-of-line block the spool.
+_RETRY_LATER_STATUS = {401, 403, 408, 409, 429}
 _MEM_PENDING_MAX = 64       # in-memory pending batches when the spool is off/unwritable
 _FLUSH_INTERVAL_S = _env_float("ASTRA_SDK_FLUSH_INTERVAL_S", 5.0)
 _SNAPSHOT_INTERVAL_S = _env_float("ASTRA_SDK_SNAPSHOT_INTERVAL_S", 30.0)
@@ -237,11 +242,16 @@ class AstraTelemetryReporter:
     # ── flush: drain in-memory → durable spool → network (delete-after-ack) ──
 
     def _drain_to_batch(self) -> dict | None:
-        with self._lock:
-            events = [self._events.popleft()
-                      for _ in range(min(_BATCH_MAX, len(self._events)))]
+        # Snapshots/windows are few (deque maxlen 64 each); take them all, then
+        # fill the REMAINING budget with events so the COMBINED batch stays
+        # ≤ _BATCH_MAX — the server counts all three lists against its cap and
+        # 422s an oversized batch outright. Leftover events wait for next flush.
         snapshots = [self._snapshots.popleft() for _ in range(len(self._snapshots))]
         windows = [self._windows.popleft() for _ in range(len(self._windows))]
+        budget = max(0, _BATCH_MAX - len(snapshots) - len(windows))
+        with self._lock:
+            events = [self._events.popleft()
+                      for _ in range(min(budget, len(self._events)))]
         if not events and not snapshots and not windows:
             return None
         return {
@@ -287,10 +297,22 @@ class AstraTelemetryReporter:
         return True
 
     def _send_batch(self, batch: dict) -> bool:
+        """True → the batch is finished (acked, or permanently rejected and
+        counted as dropped) and its segment may be deleted; False → transient
+        failure, keep the segment and retry on a later flush."""
         try:
             self._http.request(
                 "POST", f"/api/v1/telemetry/{self.deployment_id}/batch", json=batch)
             return True
+        except AstraApiError as exc:
+            if 400 <= exc.status < 500 and exc.status not in _RETRY_LATER_STATUS:
+                # e.g. 422 batch_too_large, 404 deployment deleted: re-sending
+                # the same payload can never succeed, and returning False would
+                # head-of-line block every younger segment forever.
+                with self._lock:
+                    self._dropped += len(batch.get("events") or [])
+                return True
+            return False
         except Exception:
             return False
 

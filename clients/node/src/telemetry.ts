@@ -29,7 +29,7 @@ import {
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { HttpSession } from "./http.js";
+import { AstraApiError, HttpSession } from "./http.js";
 import { type Sampleable, WindowAggregator } from "./stats.js";
 import { type OrtRuntimeInfo, runtimeFingerprint, systemSample } from "./system.js";
 
@@ -41,7 +41,12 @@ function envFloat(name: string, def: number): number {
 }
 
 const QUEUE_MAX = 10_000;
-const BATCH_MAX = 450; // below the server's 500-item cap
+const BATCH_MAX = 450; // combined events+snapshots+windows — below the server cap
+// 4xx statuses still worth retrying later: auth may be fixed out of band
+// (401/403), a paused deployment can be resumed (409), and 408/429 are
+// transient by definition. Any OTHER 4xx means the server will never accept
+// this exact payload — retrying it forever would head-of-line block the spool.
+const RETRY_LATER_STATUS = new Set([401, 403, 408, 409, 429]);
 const MEM_PENDING_MAX = 64; // in-memory pending batches when the spool is off/unwritable
 const FLUSH_INTERVAL_S = envFloat("ASTRA_SDK_FLUSH_INTERVAL_S", 5);
 const SNAPSHOT_INTERVAL_S = envFloat("ASTRA_SDK_SNAPSHOT_INTERVAL_S", 30);
@@ -293,9 +298,14 @@ export class AstraTelemetryReporter {
   // ── flush: drain in-memory → durable spool → network (delete-after-ack) ────
 
   private drainToBatch(): TelemetryBatch | null {
-    const events = this.events.splice(0, Math.min(BATCH_MAX, this.events.length));
+    // Snapshots/windows are few (each buffer caps at 64); take them all, then
+    // fill the REMAINING budget with events so the COMBINED batch stays
+    // ≤ BATCH_MAX — the server counts all three lists against its cap and
+    // 422s an oversized batch outright. Leftover events wait for next flush.
     const snapshots = this.snapshots.splice(0, this.snapshots.length);
     const windows = this.windows.splice(0, this.windows.length);
+    const budget = Math.max(0, BATCH_MAX - snapshots.length - windows.length);
+    const events = this.events.splice(0, Math.min(budget, this.events.length));
     if (!events.length && !snapshots.length && !windows.length) return null;
     return { clientId: this.clientId, batchId: hexUuid(), events, snapshots, windows };
   }
@@ -360,13 +370,29 @@ export class AstraTelemetryReporter {
     return true;
   }
 
+  /** true → the batch is finished (acked, or permanently rejected and counted
+   *  as dropped) and its segment may be deleted; false → transient failure,
+   *  keep the segment and retry on a later flush. */
   private async sendBatch(batch: unknown): Promise<boolean> {
     try {
       await this.http!.request("POST", `/api/v1/telemetry/${this.deploymentId}/batch`, {
         json: batch,
       });
       return true;
-    } catch {
+    } catch (err) {
+      if (
+        err instanceof AstraApiError &&
+        err.status >= 400 &&
+        err.status < 500 &&
+        !RETRY_LATER_STATUS.has(err.status)
+      ) {
+        // e.g. 422 batch_too_large, 404 deployment deleted: re-sending the
+        // same payload can never succeed, and returning false would
+        // head-of-line block every younger segment forever.
+        const events = (batch as { events?: unknown[] } | null)?.events;
+        this.dropped += Array.isArray(events) ? events.length : 0;
+        return true;
+      }
       return false;
     }
   }

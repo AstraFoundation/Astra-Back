@@ -110,7 +110,11 @@ class Settings(BaseSettings):
     # Client-telemetry (SDK) ingestion + drift thresholds on SDK-shipped stats.
     rate_limit_telemetry: str = "600/minute"
     rate_limit_artifact: str = "60/minute"  # artifact pulls (heavier; per-deployment)
-    telemetry_batch_max: int = 500         # max items per /telemetry batch POST
+    # Max items per /telemetry batch POST. Must stay ≥ the worst case a shipped
+    # SDK can send in one flush: astra-ai-sdk ≤0.5.0 drains 450 events + up to
+    # 64 snapshots + 64 windows = 578 items; a lower cap 422s the batch and the
+    # client spool head-of-line blocks on the non-retryable 4xx.
+    telemetry_batch_max: int = 600
     telemetry_body_max_mb: int = 8         # hard cap on the telemetry batch body (OOM guard)
     drift_psi: float = 0.2                 # prediction-drift PSI warning level
     drift_input_z: float = 3.0             # input-mean shift alert (z-score)

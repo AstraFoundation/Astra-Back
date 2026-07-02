@@ -119,7 +119,7 @@ def test_batch_ts_clamping(client, live_dep):
 
 def test_batch_too_large(client, live_dep):
     now = _now()
-    events = [_event(now) for _ in range(501)]
+    events = [_event(now) for _ in range(601)]
     r = client.post(
         f"/api/v1/telemetry/{live_dep['dep_id']}/batch",
         headers={"Authorization": f"Bearer {live_dep['key']}"},
