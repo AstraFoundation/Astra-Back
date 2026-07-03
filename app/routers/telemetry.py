@@ -150,13 +150,17 @@ def deployments(
     current_user: CurrentUser,
     session: Session = Depends(get_session),
 ) -> list[Deployment]:
+    from app.routers.deployments import _runtime_label
+
     _model(session, model_id, current_user.id)
     rows = session.exec(
         select(DeploymentRow).where(DeploymentRow.model_id == model_id)
     ).all()
     return [
         Deployment(
-            id=d.id, region=d.region, qps=d.qps, p95=d.p95,
+            # Legacy rows stored a fictional cloud region; display the real
+            # serving runtime, same normalization as the Deployments tab.
+            id=d.id, region=_runtime_label(d.region), qps=d.qps, p95=d.p95,
             errorsPct=d.errors_pct, status=d.status,  # type: ignore[arg-type]
         )
         for d in rows
