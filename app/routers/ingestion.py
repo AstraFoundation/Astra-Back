@@ -83,6 +83,9 @@ async def run_stream(
 
     async def event_source():
         last_seq = 0
+        # -1 forces an immediate emit on connect, so a mid-run refresh (or a
+        # completed-run revisit) gets the current percent before any `done`.
+        last_progress = -1
         while True:
             if await request.is_disconnected():
                 return
@@ -101,6 +104,9 @@ async def run_stream(
                         IngestionLog(ts=r.ts, level=r.level, message=r.message).model_dump()  # type: ignore[arg-type]
                     ),
                 }
+            if run is not None and run.progress != last_progress:
+                last_progress = run.progress
+                yield {"event": "progress", "data": json.dumps({"progress": run.progress})}
             if run is not None and run.status != "streaming":
                 yield {"event": "done", "data": json.dumps({"status": run.status})}
                 return

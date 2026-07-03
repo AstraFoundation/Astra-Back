@@ -27,6 +27,7 @@ def test_sse_matches_polling(client):
     assert poll_msgs, "polling returned no logs"
 
     sse_msgs: list[tuple[str, str]] = []
+    progress_events: list[int] = []
     got_done = False
     with client.stream("GET", f"/api/models/{model_id}/ingestion/{run_id}/stream") as resp:
         assert resp.status_code == 200
@@ -39,12 +40,17 @@ def test_sse_matches_polling(client):
                 data = json.loads(line.split(":", 1)[1].strip())
                 if event == "log":
                     sse_msgs.append((data["level"], data["message"]))
+                elif event == "progress":
+                    progress_events.append(data["progress"])
                 elif event == "done":
                     got_done = True
                     break
 
     assert got_done
     assert sse_msgs == poll_msgs  # full replay, same order, same content
+    # A finished run's stream reports its percent on connect, before `done`,
+    # so a revisiting client can render the bar without polling.
+    assert progress_events == [polled["progress"]] == [100]
 
 
 def test_polling_after_cursor(client):
